@@ -1,9 +1,8 @@
 import * as pdfjsLib from 'pdfjs-dist';
 
-// Set up worker source with .js (not .mjs) and matching pdfjs-dist version
+// Set up worker source with cdnjs (version 4.4.168)
 if (typeof window !== 'undefined') {
-  const version = pdfjsLib.version || '4.4.168';
-  pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${version}/build/pdf.worker.min.js`;
+  pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.worker.min.js`;
 }
 
 // In-memory cache to avoid re-rasterizing on every re-render or tab switch
@@ -38,11 +37,10 @@ export async function renderPDFPagesToImages(
 
   try {
     const bytes = cleanBase64ToUint8Array(fileData);
-    const version = pdfjsLib.version || '4.4.168';
     const loadingTask = pdfjsLib.getDocument({
       data: bytes,
       useSystemFonts: true,
-      cMapUrl: `https://unpkg.com/pdfjs-dist@${version}/cmaps/`,
+      cMapUrl: `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/cmaps/`,
       cMapPacked: true,
     });
 
