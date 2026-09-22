@@ -200,54 +200,108 @@ export const DanishManuscriptPage: React.FC<DanishManuscriptProps> = ({
   const submissionId = report.submissionId || 'trn:oid:::2:498214051';
   const sectionTitle = isSimilarity ? 'Submission' : 'AI Writing Submission';
 
-  // Badge pill helper
+  // Badge pill helper - positioned on the LEFT side of highlighted phrases
   const renderBadge = (num: number) => {
     const color = getBadgeColor(num);
     return (
       <span
         key={`dan-b-${num}`}
-        className={`inline-flex items-center justify-center w-3.5 h-3.5 rounded-full text-[8.5px] font-bold font-mono ${color.bg} ${color.text} shadow-2xs ml-0.5 align-middle`}
+        className={`inline-flex items-center justify-center w-3.5 h-3.5 rounded-full text-[8.5px] font-bold font-mono ${color.bg} ${color.text} shadow-2xs mr-1 align-middle`}
       >
         {num}
       </span>
     );
   };
 
-  // Similarity text highlight helper
+  // Similarity text highlight helper (4-color rotation) & AI highlighter (light blue for 21-70%)
   const hl = (
     text: string,
     sourceNum: number = 1,
     styleVariant?: 'red' | 'blue_underlined'
   ) => {
-    if (!isSimilarity) return <span>{text}</span>;
+    // AI Writing Mode Highlighting Logic:
+    // ai 1-20% result: 70% data (star%) no highlight in report
+    // ai 21-70%: 15% data light blue highlighter
+    // ai 0%: 15% data no highlighter
+    if (!isSimilarity) {
+      if (report.aiScore >= 21 && (sourceNum === 1 || sourceNum === 2)) {
+        return (
+          <span
+            style={{
+              backgroundColor: '#93c5fd', // prominent light blue highlighter
+              color: '#1e3a8a',           // dark blue text
+            }}
+            className="rounded-xs px-1 py-0.5 inline font-normal"
+          >
+            {text}
+          </span>
+        );
+      }
+      return <span>{text}</span>;
+    }
+
+    // Similarity Mode: 4-color Turnitin palette (1: Red/Pink, 2: Blue, 3: Emerald/Green, 4: Purple)
     const color = getBadgeColor(sourceNum);
-    const isBlue = styleVariant === 'blue_underlined' || color.isUnderlined;
+    const isBlue = styleVariant === 'blue_underlined' || sourceNum === 2 || color.isUnderlined;
+    const isGreen = sourceNum === 3;
+    const isPurple = sourceNum === 4;
 
     if (isBlue) {
       return (
         <span
           style={{
-            backgroundColor: '#dbeafe',
-            color: '#1d4ed8',
+            backgroundColor: '#93c5fd',
+            color: '#1e3a8a',
           }}
-          className="underline decoration-[#2563eb] decoration-1 underline-offset-2 rounded-xs px-1 py-0.5 inline font-normal"
+          className="rounded-xs px-1 py-0.5 inline font-normal"
         >
-          {text}
           {renderBadge(sourceNum)}
+          {text}
         </span>
       );
     }
 
+    if (isGreen) {
+      return (
+        <span
+          style={{
+            backgroundColor: '#86efac',
+            color: '#064e3b',
+          }}
+          className="rounded-xs px-1 py-0.5 inline font-normal"
+        >
+          {renderBadge(sourceNum)}
+          {text}
+        </span>
+      );
+    }
+
+    if (isPurple) {
+      return (
+        <span
+          style={{
+            backgroundColor: '#d8b4fe',
+            color: '#4c1d95',
+          }}
+          className="rounded-xs px-1 py-0.5 inline font-normal"
+        >
+          {renderBadge(sourceNum)}
+          {text}
+        </span>
+      );
+    }
+
+    // Default Source 1 (Red / Pink)
     return (
       <span
         style={{
-          backgroundColor: '#fee2e2',
-          color: '#b91c1c',
+          backgroundColor: '#fca5a5',
+          color: '#991b1b',
         }}
         className="rounded-xs px-1 py-0.5 inline font-normal"
       >
-        {text}
         {renderBadge(sourceNum)}
+        {text}
       </span>
     );
   };

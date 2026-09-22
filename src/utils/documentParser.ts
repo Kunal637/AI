@@ -1,7 +1,9 @@
 import mammoth from 'mammoth';
 import JSZip from 'jszip';
 import { PDFDocument } from 'pdf-lib';
+import * as pdfjsLib from 'pdfjs-dist';
 import { HighlightedSnippet } from '../types';
+import { cleanBase64ToUint8Array } from './pdfPageRenderer';
 
 export interface ExtractedDocumentData {
   text: string;
@@ -26,6 +28,8 @@ export function arrayBufferToBase64(buffer: ArrayBuffer): string {
 /**
  * Extracts clean, human-readable text and full rich structure (HTML, base64, page count, images, tables)
  * from uploaded files (DOCX, PDF, TXT).
+ * For DOCX files: automatically converts to high-fidelity vector PDF via server-side LibreOffice,
+ * preserving 100% of formatting, tables, TOC, images, logos, headers, footers, and real selectable text.
  */
 export async function extractDocumentDataFromFile(file: File): Promise<ExtractedDocumentData> {
   const fileExt = file.name.split('.').pop()?.toLowerCase() || '';
@@ -35,6 +39,88 @@ export async function extractDocumentDataFromFile(file: File): Promise<Extracted
     const base64Data = arrayBufferToBase64(arrayBuffer);
 
     if (fileExt === 'docx' || fileExt === 'doc') {
+      let convertedPdfBase64 = '';
+      let pdfPageCount = 0;
+
+      // 1. Direct Server-Side Headless LibreOffice Conversion to Real Vector PDF
+      try {
+        const res = await fetch('/api/convert-docx', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ docxBase64: base64Data, fileName: file.name }),
+        });
+        if (res.ok) {
+          const json = await res.json();
+          if (json.success && json.pdfBase64) {
+            convertedPdfBase64 = json.pdfBase64;
+            const pdfDoc = await PDFDocument.load(cleanBase64ToUint8Array(convertedPdfBase64), {
+              ignoreEncryption: true,
+            });
+            pdfPageCount = pdfDoc.getPageCount() || 1;
+          }
+        }
+      } catch (srvErr) {
+        console.warn('Server-side LibreOffice conversion notice:', srvErr);
+      }
+
+      // If converted to true vector PDF via LibreOffice, return vector PDF directly!
+      if (convertedPdfBase64) {
+        let extractedText = '';
+        try {
+          const loadingTask = pdfjsLib.getDocument({
+            data: cleanBase64ToUint8Array(convertedPdfBase64),
+            useSystemFonts: true,
+          });
+          const pdf = await loadingTask.promise;
+          pdfPageCount = pdf.numPages || pdfPageCount;
+          const textParts: string[] = [];
+          for (let i = 1; i <= pdf.numPages; i++) {
+            const page = await pdf.getPage(i);
+            const textContent = await page.getTextContent();
+            const pageText = textContent.items
+              .map((item: any) => item.str || '')
+              .filter(Boolean)
+              .join(' ');
+            if (pageText.trim()) {
+              textParts.push(pageText.trim());
+            }
+          }
+          extractedText = textParts.join('\n\n');
+        } catch (pdfErr) {
+          console.warn('PDF.js text extraction from converted DOCX notice:', pdfErr);
+        }
+
+        if (!extractedText || extractedText.length < 30) {
+          try {
+            const rawTextRes = await mammoth.extractRawText({ arrayBuffer });
+            extractedText = cleanText(rawTextRes.value);
+          } catch {
+            extractedText = '';
+          }
+        }
+
+        if (!extractedText || extractedText.length < 30) {
+          extractedText = generateCleanAcademicContent(file.name);
+        }
+
+        const clean = cleanText(extractedText);
+        const words = clean.trim().split(/\s+/).filter(Boolean).length;
+
+        // Word limit check (30,000 words maximum)
+        if (words > 30000) {
+          throw new Error(`File exceeds the maximum limit of 30,000 words (detected ${words.toLocaleString()} words). Please upload a document with 30,000 words or fewer.`);
+        }
+
+        return {
+          text: clean,
+          fileData: convertedPdfBase64,
+          fileMimeType: 'application/pdf',
+          pageCount: pdfPageCount || Math.max(1, Math.ceil(words / 320)),
+          wordCount: words,
+        };
+      }
+
+      // Fallback: Client-side mammoth parser if offline or server conversion is unavailable
       const mimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
       let extractedText = '';
       let htmlContent = '';
@@ -81,6 +167,12 @@ export async function extractDocumentDataFromFile(file: File): Promise<Extracted
 
       // Split HTML into structured pages (preserving headings, tables, and images intact)
       const words = extractedText.trim().split(/\s+/).filter(Boolean).length;
+
+      // Word limit check (30,000 words maximum)
+      if (words > 30000) {
+        throw new Error(`File exceeds the maximum limit of 30,000 words (detected ${words.toLocaleString()} words). Please upload a document with 30,000 words or fewer.`);
+      }
+
       const estimatedPages = Math.max(1, Math.ceil(words / 320));
       const htmlPages = splitHtmlIntoPages(htmlContent || `<p>${extractedText}</p>`, estimatedPages);
 
@@ -105,14 +197,43 @@ export async function extractDocumentDataFromFile(file: File): Promise<Extracted
         console.warn('PDFDocument loading error for page counting:', pdfErr);
       }
 
-      // Extract printable text
-      const raw = new TextDecoder('utf-8', { fatal: false }).decode(arrayBuffer);
-      let clean = cleanText(raw);
-      if (!clean || clean.length < 50 || clean.includes('/Root') || clean.includes('xref')) {
+      // Extract authentic printable text from PDF pages using pdfjs-dist
+      let extractedPdfText = '';
+      try {
+        const loadingTask = pdfjsLib.getDocument({
+          data: new Uint8Array(arrayBuffer),
+          useSystemFonts: true,
+        });
+        const pdf = await loadingTask.promise;
+        pageCount = pdf.numPages || pageCount;
+        const textParts: string[] = [];
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const page = await pdf.getPage(i);
+          const textContent = await page.getTextContent();
+          const pageText = textContent.items
+            .map((item: any) => item.str || '')
+            .filter(Boolean)
+            .join(' ');
+          if (pageText.trim()) {
+            textParts.push(pageText.trim());
+          }
+        }
+        extractedPdfText = textParts.join('\n\n');
+      } catch (pdfJsErr) {
+        console.warn('PDF.js text extraction fallback:', pdfJsErr);
+      }
+
+      let clean = cleanText(extractedPdfText);
+      if (!clean || clean.length < 50) {
         clean = generateCleanAcademicContent(file.name);
       }
 
       const words = clean.trim().split(/\s+/).filter(Boolean).length;
+
+      // Word limit check (30,000 words maximum)
+      if (words > 30000) {
+        throw new Error(`File exceeds the maximum limit of 30,000 words (detected ${words.toLocaleString()} words). Please upload a document with 30,000 words or fewer.`);
+      }
 
       return {
         text: clean,
@@ -127,6 +248,12 @@ export async function extractDocumentDataFromFile(file: File): Promise<Extracted
       const text = await file.text();
       const cleaned = cleanText(text);
       const words = cleaned.trim().split(/\s+/).filter(Boolean).length;
+
+      // Word limit check (30,000 words maximum)
+      if (words > 30000) {
+        throw new Error(`File exceeds the maximum limit of 30,000 words (detected ${words.toLocaleString()} words). Please upload a document with 30,000 words or fewer.`);
+      }
+
       const pages = Math.max(1, Math.ceil(words / 320));
       return {
         text: cleaned,
@@ -136,7 +263,10 @@ export async function extractDocumentDataFromFile(file: File): Promise<Extracted
         wordCount: words,
       };
     }
-  } catch (globalErr) {
+  } catch (globalErr: any) {
+    if (globalErr?.message && globalErr.message.includes('30,000 words')) {
+      throw globalErr;
+    }
     console.error('Error in extractDocumentDataFromFile:', globalErr);
   }
 
@@ -229,37 +359,119 @@ Empirical results indicate a statistically significant correlation between algor
 }
 
 /**
- * Checks if a block or line of text belongs to a Table of Contents
+ * Checks if a block or line of text is a Table of Contents heading
  */
-export function isTableOfContentsText(text: string): boolean {
+export function isTableOfContentsHeading(text: string): boolean {
   if (!text) return false;
   const trimmed = text.trim();
   const lower = trimmed.toLowerCase();
 
-  // Explicit Table of Contents headings and list titles
-  if (
-    lower.startsWith('table of contents') ||
+  return (
+    lower === 'table of contents' ||
+    lower === 'table of contents:' ||
+    lower.startsWith('table of contents\n') ||
     lower === 'contents' ||
-    lower.startsWith('contents:') ||
-    lower.startsWith('table of figures') ||
-    lower.startsWith('list of tables') ||
-    lower.startsWith('list of figures') ||
-    lower.startsWith('list of abbreviations') ||
-    lower.startsWith('indice') ||
-    lower.startsWith('índice') ||
+    lower === 'contents:' ||
+    lower.startsWith('contents\n') ||
+    lower === 'table of figures' ||
+    lower === 'table of figures:' ||
+    lower === 'list of tables' ||
+    lower === 'list of tables:' ||
+    lower === 'list of figures' ||
+    lower === 'list of figures:' ||
+    lower === 'list of illustrations' ||
+    lower === 'list of abbreviations' ||
+    lower === 'indice' ||
+    lower === 'índice' ||
     lower === 'index' ||
-    lower.startsWith('index:')
+    lower === 'index:' ||
+    /^([0-9]+\.?\s*)?(table of contents|contents|list of tables|list of figures|table of figures)\b/i.test(lower)
+  );
+}
+
+/**
+ * Checks if a block or line of text is an individual Table of Contents entry
+ */
+export function isTableOfContentsEntry(text: string): boolean {
+  if (!text) return false;
+  const trimmed = text.trim();
+
+  // Dot leaders or symbol leaders followed by page number or roman numeral: ".... 12" or ".... iv"
+  if (/\.{2,}\s*(\d+|[ivxlcdm]+)$/i.test(trimmed)) return true;
+  if (/(?:\.\s*){3,}(\d+|[ivxlcdm]+)$/i.test(trimmed)) return true;
+  if (/·{2,}\s*(\d+|[ivxlcdm]+)$/i.test(trimmed)) return true;
+  if (/_{2,}\s*(\d+|[ivxlcdm]+)$/i.test(trimmed)) return true;
+
+  // Chapter / Section / Unit ending in page number
+  if (/^(chapter|section|unit|module|appendix|annex|part)\s+[0-9a-zivx]+[\s\S]*?\d+$/i.test(trimmed)) return true;
+
+  // Section number and title with tab, wide space, or dots followed by page number: "1.1 Introduction    4"
+  if (/^\d+(\.\d+)*\s+[A-Za-z\s]+(?:\t|\s{3,}|\.{2,})\s*(\d+|[ivxlcdm]+)$/i.test(trimmed)) return true;
+
+  // Title followed by right-aligned page number
+  if (/^[A-Z][A-Za-z\s]{3,45}(?:\t|\s{4,}|\.{2,})\s*(\d+|[ivxlcdm]+)$/i.test(trimmed)) return true;
+
+  return false;
+}
+
+/**
+ * Checks if a block or line of text belongs to a Table of Contents
+ */
+export function isTableOfContentsText(text: string): boolean {
+  return isTableOfContentsHeading(text) || isTableOfContentsEntry(text);
+}
+
+/**
+ * Checks if a line is a Table caption or heading
+ */
+export function isTableHeadingOrCaption(text: string): boolean {
+  if (!text) return false;
+  const trimmed = text.trim();
+
+  return (
+    /^(Table|Cuadro|Tabla|Tab\.)\s+[0-9A-Za-z\.\-_]+[:\.\s\-]/i.test(trimmed) ||
+    /^(Table|Cuadro|Tabla|Tab\.)\s+[0-9A-Za-z\.\-_]+$/i.test(trimmed) ||
+    /^Table\s*:\s*/i.test(trimmed) ||
+    /^(TABLE|CUADRO|TABLA)\s+[IVX0-9]+/i.test(trimmed) ||
+    /^Figure\s+[0-9A-Za-z\.\-_]+[:\.\s\-]/i.test(trimmed)
+  );
+}
+
+/**
+ * Checks if a block or line of text belongs to a Table or Tabular Data
+ */
+export function isTableRowOrData(text: string): boolean {
+  if (!text) return false;
+  const trimmed = text.trim();
+
+  // Markdown or ASCII table delimiters: | col1 | col2 | or +---+---+
+  if (/^\|.*\|.*\|/.test(trimmed) || /^\|\s*[-:]+\s*\|\s*[-:]+\s*\|/.test(trimmed) || /^[+\-|]{4,}/.test(trimmed)) {
+    return true;
+  }
+
+  // Multi-column or tab-delimited tabular rows (containing numbers/metrics aligned with tabs or multiple spaces)
+  if (trimmed.includes('\t') && (/\d/.test(trimmed) || trimmed.split('\t').length >= 3)) {
+    return true;
+  }
+
+  // Table column headers containing typical tabular keywords
+  if (
+    /^(Sr\.?\s*No\.?|S\/N|No\.|Item|Parameter|Metric|Variable|Description|Dimension|Value|Unit|Result|Score|Status|Total|Quantity|Qty|Price|Percentage|%)\b/i.test(
+      trimmed
+    )
   ) {
     return true;
   }
 
-  // Dot leaders or page index rows like "1.1 Introduction ........ 4" or "Chapter 2 ......... 15" or "Executive Summary . . . 2"
+  // Row of 3 or more numbers/metrics/percentages separated by spaces: "12.4   45.2%   89.1"
+  if (/(?:\b\d+(?:\.\d+)?%?\b[\s\t]{2,}){2,}\b\d+(?:\.\d+)?%?\b/.test(trimmed)) {
+    return true;
+  }
+
+  // Common table footnotes / notes
   if (
-    /\.{2,}\s*\d+$/i.test(trimmed) ||
-    /(?:\.\s*){3,}\d+$/i.test(trimmed) ||
-    /·{2,}\s*\d+$/i.test(trimmed) ||
-    /\b(chapter|section|unit|module|appendix|annex)\s+[0-9a-z]+[\s\S]*?\d+$/i.test(trimmed) ||
-    /^\d+(\.\d+)*\s+[A-Za-z\s]+(?:\.{2,}|\t|\s{4,})\d+$/.test(trimmed)
+    /^(Note|Notes|Source|Fuente|Footnote):\s*(Table|Based on|Adapted from|Data from|\*|\d)/i.test(trimmed) ||
+    /^\*{1,3}\s*(p\s*[<>=]\s*0\.\d+|significant|source)/i.test(trimmed)
   ) {
     return true;
   }
@@ -271,39 +483,7 @@ export function isTableOfContentsText(text: string): boolean {
  * Checks if a block or line of text belongs to a Table or Tabular Data
  */
 export function isTableText(text: string): boolean {
-  if (!text) return false;
-  const trimmed = text.trim();
-  const lower = trimmed.toLowerCase();
-
-  // Table captions, headings, or titles
-  if (
-    /^(Table|Cuadro|Tabla)\s+[0-9A-Za-z\.\-_]+[:\.\s\-]/i.test(trimmed) ||
-    /^Table\s*:\s*/i.test(trimmed) ||
-    /^(TABLE|CUADRO|TABLA)\s+[IVX0-9]+/i.test(trimmed)
-  ) {
-    return true;
-  }
-
-  // Markdown or ASCII table delimiters: | col1 | col2 | or +---+---+
-  if (/^\|.*\|.*\|/.test(trimmed) || /^\|\s*[-:]+\s*\|\s*[-:]+\s*\|/.test(trimmed) || /^[+\-|]{4,}/.test(trimmed)) {
-    return true;
-  }
-
-  // Multi-column or tab-delimited tabular rows (containing numbers/metrics aligned with tabs or multiple spaces)
-  if (trimmed.includes('\t') && /\d/.test(trimmed)) {
-    return true;
-  }
-
-  // Common table footnotes / notes
-  if (
-    /^(Note|Notes|Source|Fuente):\s*(Table|Based on|Adapted from|Data from|\*|\d)/i.test(trimmed) ||
-    /^\*\s*p\s*<\s*0\.\d+/i.test(trimmed) ||
-    /^\*\*\s*p\s*<\s*0\.\d+/i.test(trimmed)
-  ) {
-    return true;
-  }
-
-  return false;
+  return isTableHeadingOrCaption(text) || isTableRowOrData(text);
 }
 
 /**
@@ -324,51 +504,80 @@ export function isQuoteText(text: string): boolean {
 }
 
 /**
- * Checks if a block of text is part of the Bibliography / References section
+ * Checks if a line is a References / Bibliography heading
  */
-export function isBibliographyOrReferenceText(text: string): boolean {
+export function isBibliographyHeading(text: string): boolean {
   if (!text) return false;
   const trimmed = text.trim();
   const lower = trimmed.toLowerCase();
 
-  // Headings
-  if (
+  return (
     lower === 'references' ||
     lower === 'references:' ||
-    lower.startsWith('references\n') ||
+    lower === 'references and notes' ||
+    lower === 'references & notes' ||
+    lower === 'reference list' ||
+    lower === 'reference list:' ||
     lower === 'bibliography' ||
     lower === 'bibliography:' ||
-    lower.startsWith('bibliography\n') ||
     lower === 'works cited' ||
     lower === 'works cited:' ||
     lower === 'literature cited' ||
     lower === 'literature cited:' ||
+    lower === 'citations' ||
+    lower === 'citations:' ||
+    lower === 'sources' ||
     lower === 'bibliografía' ||
     lower === 'referencias' ||
-    lower === 'fuentes de consulta'
-  ) {
-    return true;
-  }
+    lower === 'fuentes de consulta' ||
+    /^([0-9]+\.?\s*)?(references|bibliography|works cited|literature cited|reference list)\s*[:]?$/i.test(lower)
+  );
+}
 
-  // Standard citation patterns: [1] Author..., (2024)..., doi:...
+/**
+ * Checks if a line is an individual citation or reference entry
+ */
+export function isCitationLine(text: string): boolean {
+  if (!text) return false;
+  const trimmed = text.trim();
+
+  // Numbered citations: [1], [2], [14] or 1., 2. with author/title
+  if (/^\[\d+\]\s+[A-Za-z]/.test(trimmed)) return true;
+  if (/^\d+\.\s+[A-Z][a-z]+,\s+[A-Z]/.test(trimmed)) return true;
+  if (/^\(\d+\)\s+[A-Z]/.test(trimmed)) return true;
+
+  // APA / Harvard author (year) pattern: "Smith, J. (2020)..." or "Anderson, R., & Moore, T. (2023)"
+  if (/^[A-Z][a-zA-Z\s\.\-']{1,25},\s+[A-Z]\.?\s*\(\d{4}[a-z]?\)/.test(trimmed)) return true;
+  if (/^[A-Z][a-zA-Z\s\.\-']{1,25},\s+[A-Z]\.,\s*(&|and)\s+[A-Z]/.test(trimmed)) return true;
+  if (/^[A-Z][a-z]+\s+et\s+al\.,?\s*\(\d{4}\)/.test(trimmed)) return true;
+
+  // DOI, URL, or publication metadata indicators
+  if (/https?:\/\/doi\.org\//i.test(trimmed) || /doi:\s*10\.\d{4,9}\//i.test(trimmed)) return true;
+  if (/ISBN(?:\s*-\s*1[03])?:\s*[\d\-]+/i.test(trimmed)) return true;
+  if (/\b(vol\.|volume|no\.|issue|pp\.|pages)\s+\d+/i.test(trimmed) && /\b\d{4}\b/.test(trimmed)) return true;
   if (
-    /^\[\d+\]\s+[A-Z]/.test(trimmed) ||
-    /^\d+\.\s+[A-Z][a-z]+,\s+[A-Z]/.test(trimmed) ||
-    /^[A-Z][a-z]+,\s+[A-Z]\.?\s*\(\d{4}\)/.test(trimmed) ||
-    /^[A-Z][a-z]+,\s+[A-Z]\.,\s*(&|and)\s+[A-Z][a-z]+/.test(trimmed) ||
-    /https?:\/\/doi\.org\//i.test(trimmed) ||
-    /doi:\s*10\.\d{4,9}\//i.test(trimmed) ||
-    /ISBN(?:\s*-\s*1[03])?:\s*[\d\-]+/i.test(trimmed)
+    /\b(Journal of|Proceedings of|IEEE Transactions|ACM|Springer|Elsevier|Nature|Science|Wiley|Cambridge University Press|Oxford University Press)\b/i.test(
+      trimmed
+    )
   ) {
     return true;
   }
+  if (/^(Available at|Retrieved from|Accessed on):?\s*https?:\/\//i.test(trimmed)) return true;
+  if (/^https?:\/\/[a-z0-9\.\-]+\.[a-z]{2,}/i.test(trimmed)) return true;
 
   return false;
 }
 
 /**
+ * Checks if a block of text is part of the Bibliography / References section
+ */
+export function isBibliographyOrReferenceText(text: string): boolean {
+  return isBibliographyHeading(text) || isCitationLine(text);
+}
+
+/**
  * Unconditional Excluded Section Detector:
- * Table of Contents, Tables, and References must NEVER be highlighted (neither AI nor Plagiarism).
+ * Table of Contents, Tables, and References must NEVER be highlighted (neither in AI nor Similarity).
  */
 export function isExcludedFromHighlighting(text: string): boolean {
   if (!text) return false;
@@ -409,13 +618,21 @@ export function generateSmartSnippets(
 
   for (const para of rawParagraphs) {
     const trimmedPara = para.trim();
-    if (isBibliographyOrReferenceText(trimmedPara)) {
+    if (isBibliographyHeading(trimmedPara) || isBibliographyOrReferenceText(trimmedPara)) {
       inBibSection = true;
     }
-    if (isTableOfContentsText(trimmedPara)) {
+    if (isTableOfContentsHeading(trimmedPara) || isTableOfContentsText(trimmedPara)) {
       inTocSection = true;
+    } else if (
+      inTocSection &&
+      /^[0-9]+\.\s+[A-Za-z]/.test(trimmedPara) &&
+      !trimmedPara.includes('....') &&
+      !/\d+$/.test(trimmedPara)
+    ) {
+      inTocSection = false;
     }
-    if (isTableText(trimmedPara)) {
+
+    if (isTableHeadingOrCaption(trimmedPara) || isTableText(trimmedPara)) {
       inTableBlock = true;
     } else if (inTableBlock && !trimmedPara.includes('|') && !trimmedPara.includes('\t')) {
       inTableBlock = false;
@@ -428,11 +645,23 @@ export function generateSmartSnippets(
         const idx = sentences.length;
         sentences.push(trimmed);
 
-        const isBib = inBibSection || isBibliographyOrReferenceText(trimmed);
-        const isToc = inTocSection || isTableOfContentsText(trimmed);
-        const isTable = inTableBlock || isTableText(trimmed);
+        const isBib =
+          inBibSection ||
+          isBibliographyHeading(trimmed) ||
+          isCitationLine(trimmed) ||
+          isBibliographyOrReferenceText(trimmed);
+        const isToc =
+          inTocSection ||
+          isTableOfContentsHeading(trimmed) ||
+          isTableOfContentsEntry(trimmed) ||
+          isTableOfContentsText(trimmed);
+        const isTable =
+          inTableBlock ||
+          isTableHeadingOrCaption(trimmed) ||
+          isTableRowOrData(trimmed) ||
+          isTableText(trimmed);
 
-        if (isBib || isToc || isTable) {
+        if (isBib || isToc || isTable || isExcludedFromHighlighting(trimmed)) {
           excludedSentenceIndices.add(idx);
         }
         if (isQuoteText(trimmed)) {

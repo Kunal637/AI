@@ -1,6 +1,7 @@
 import { ScanReport, MatchedSource } from '../types';
 import { isCyb2103Document } from '../data/cyb2103Report';
 import { isDanishDocument } from '../data/danishReport';
+import { isKunalReport } from '../data/kunalReport';
 
 export interface PageLayoutItem {
   pageNumber: number;
@@ -22,8 +23,19 @@ export function getReportPageLayout(
   report: ScanReport,
   mode: 'ai' | 'similarity'
 ): ReportLayoutPlan {
+  const isCyb = isCyb2103Document(report.fileName || report.title);
   const isDan = isDanishDocument(report.fileName || report.title);
-  const mCount = isDan ? 12 : (report.pageCount || 12);
+  const isKunal = isKunalReport(report);
+
+  let mCount = report.pageCount || 1;
+  if (isDan) {
+    mCount = 12;
+  } else if (isCyb) {
+    mCount = 4;
+  } else if (isKunal) {
+    mCount = 3;
+  }
+
   const sources = report.sources || [];
 
   if (mode === 'ai') {
@@ -40,26 +52,65 @@ export function getReportPageLayout(
     ];
     return { totalPages: 2 + mCount, manuscriptCount: mCount, pages };
   } else {
-    // 3 Cover Pages (Cover, Integrity Overview, Top Sources) + Manuscript Pages
-    const pages: PageLayoutItem[] = [
-      { pageNumber: 1, type: 'cover', sectionTitle: 'Cover Page' },
-      { pageNumber: 2, type: 'integrity_overview', sectionTitle: 'Integrity Overview' },
-      {
+    // 2 Cover Pages (Cover, Integrity Overview) + Top Sources Pages + Manuscript Pages
+    const sourcesPages: PageLayoutItem[] = [];
+    if (sources.length <= 10) {
+      sourcesPages.push({
         pageNumber: 3,
         type: 'top_sources',
         sectionTitle: 'Top Sources',
         sourcesSlice: sources.slice(0, 10),
         startIndex: 0,
         isFirstSourcePage: true,
-      },
+      });
+    } else {
+      // First page: 10 sources
+      sourcesPages.push({
+        pageNumber: 3,
+        type: 'top_sources',
+        sectionTitle: 'Top Sources',
+        sourcesSlice: sources.slice(0, 10),
+        startIndex: 0,
+        isFirstSourcePage: true,
+      });
+      // Continuation pages: 11 sources per page
+      let sIdx = 10;
+      let pNum = 4;
+      while (sIdx < sources.length) {
+        const slice = sources.slice(sIdx, sIdx + 11);
+        sourcesPages.push({
+          pageNumber: pNum,
+          type: 'top_sources',
+          sectionTitle: 'Top Sources',
+          sourcesSlice: slice,
+          startIndex: sIdx,
+          isFirstSourcePage: false,
+        });
+        sIdx += 11;
+        pNum++;
+      }
+    }
+
+    const totalCoverAndSourcePages = 2 + sourcesPages.length;
+    const manuscriptStartPageNumber = totalCoverAndSourcePages + 1;
+
+    const pages: PageLayoutItem[] = [
+      { pageNumber: 1, type: 'cover', sectionTitle: 'Cover Page' },
+      { pageNumber: 2, type: 'integrity_overview', sectionTitle: 'Integrity Overview' },
+      ...sourcesPages,
       ...Array.from({ length: mCount }).map((_, idx) => ({
-        pageNumber: 4 + idx,
+        pageNumber: manuscriptStartPageNumber + idx,
         type: 'manuscript' as const,
         manuscriptIndex: idx,
         sectionTitle: 'Submission',
       })),
     ];
-    return { totalPages: 3 + mCount, manuscriptCount: mCount, pages };
+
+    return {
+      totalPages: totalCoverAndSourcePages + mCount,
+      manuscriptCount: mCount,
+      pages,
+    };
   }
 }
 

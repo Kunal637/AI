@@ -188,10 +188,8 @@ export const TurnitinCoverPage: React.FC<{
   const institution = report.institution || 'Allama Iqbal Open University';
   const subDate = report.submissionDate || report.date || 'Sep 12, 2026, 3:50 PM GMT';
   const dlDate = report.downloadDate || 'Sep 12, 2026, 3:51 PM GMT';
-  const isDanish = isDanishDocument(report.fileName || report.title);
-  const manuscriptPages = isDanish
-    ? (mode === 'similarity' ? 13 : 12)
-    : (report.pageCount || Math.max(1, totalPages - (mode === 'similarity' ? 3 : 2)));
+  const manuscriptPages =
+    report.pageCount || Math.max(1, totalPages - (mode === 'similarity' ? 3 : 2));
 
   return (
     <div className="flex flex-col justify-between h-full min-h-[960px] font-sans p-6 sm:p-10 text-slate-900 bg-white select-text">
@@ -533,27 +531,27 @@ export const TurnitinIntegrityOverviewPage: React.FC<{
 
           {/* Column 2: Top Sources Summary */}
           <div>
-            <h3 className="text-[15.5px] font-bold text-slate-900 tracking-tight mb-2">
+            <h3 className="text-[15.5px] font-bold text-slate-950 tracking-tight mb-2">
               Top Sources
             </h3>
 
-            <div className="space-y-1.5 text-xs text-slate-800">
+            <div className="space-y-1.5 text-xs text-slate-900">
               <div className="flex items-center gap-2">
-                <span className="font-bold w-6 text-right text-[12px] text-slate-900">{sourceDist.internet}%</span>
-                <Globe className="w-3.5 h-3.5 text-slate-500 shrink-0 ml-1" />
-                <span className="text-[11.5px] font-medium text-slate-700">Internet sources</span>
+                <span className="font-bold w-6 text-right text-[12px] text-slate-950">{sourceDist.internet}%</span>
+                <Globe className="w-3.5 h-3.5 text-slate-700 shrink-0 ml-1" />
+                <span className="text-[11.5px] font-semibold text-slate-900">Internet sources</span>
               </div>
 
               <div className="flex items-center gap-2">
-                <span className="font-bold w-6 text-right text-[12px] text-slate-900">{sourceDist.publications}%</span>
-                <BookOpen className="w-3.5 h-3.5 text-slate-500 shrink-0 ml-1" />
-                <span className="text-[11.5px] font-medium text-slate-700">Publications</span>
+                <span className="font-bold w-6 text-right text-[12px] text-slate-950">{sourceDist.publications}%</span>
+                <BookOpen className="w-3.5 h-3.5 text-slate-700 shrink-0 ml-1" />
+                <span className="text-[11.5px] font-semibold text-slate-900">Publications</span>
               </div>
 
               <div className="flex items-center gap-2">
-                <span className="font-bold w-6 text-right text-[12px] text-slate-900">{sourceDist.studentPapers}%</span>
-                <GraduationCap className="w-3.5 h-3.5 text-slate-500 shrink-0 ml-1" />
-                <span className="text-[11.5px] font-medium text-slate-700">Submitted works (Student Papers)</span>
+                <span className="font-bold w-6 text-right text-[12px] text-slate-950">{sourceDist.studentPapers}%</span>
+                <GraduationCap className="w-3.5 h-3.5 text-slate-700 shrink-0 ml-1" />
+                <span className="text-[11.5px] font-semibold text-slate-900">Submitted works (Student Papers)</span>
               </div>
             </div>
           </div>
@@ -624,15 +622,15 @@ export function formatTurnitinAiScore(score: number): string {
 export const getBadgeColor = (index: number) => {
   const colors = [
     { bg: 'bg-[#e91e63]', text: 'text-white', light: '#fce7f3', textColor: '#9d174d', tagBg: 'bg-[#fce7f3] text-[#9d174d]', isUnderlined: false }, // 1 Pink/Magenta
-    { bg: 'bg-[#2563eb]', text: 'text-white', light: '#dbeafe', textColor: '#1d4ed8', tagBg: 'bg-[#dbeafe] text-[#1d4ed8]', isUnderlined: true },  // 2 Blue / Underlined
+    { bg: 'bg-[#2563eb]', text: 'text-white', light: '#dbeafe', textColor: '#1d4ed8', tagBg: 'bg-[#dbeafe] text-[#1d4ed8]', isUnderlined: false }, // 2 Blue
     { bg: 'bg-[#059669]', text: 'text-white', light: '#d1fae5', textColor: '#047857', tagBg: 'bg-[#d1fae5] text-[#047857]', isUnderlined: false }, // 3 Emerald/Green
     { bg: 'bg-[#7c3aed]', text: 'text-white', light: '#ede9fe', textColor: '#6d28d9', tagBg: 'bg-[#ede9fe] text-[#6d28d9]', isUnderlined: false }, // 4 Purple/Violet
     { bg: 'bg-[#db2777]', text: 'text-white', light: '#fce7f3', textColor: '#be185d', tagBg: 'bg-[#fce7f3] text-[#be185d]', isUnderlined: false }, // 5 Rose/Pink
-    { bg: 'bg-[#2563eb]', text: 'text-white', light: '#dbeafe', textColor: '#1d4ed8', tagBg: 'bg-[#dbeafe] text-[#1d4ed8]', isUnderlined: true },  // 6 Blue / Underlined
+    { bg: 'bg-[#2563eb]', text: 'text-white', light: '#dbeafe', textColor: '#1d4ed8', tagBg: 'bg-[#dbeafe] text-[#1d4ed8]', isUnderlined: false }, // 6 Blue
     { bg: 'bg-[#16a34a]', text: 'text-white', light: '#dcfce7', textColor: '#15803d', tagBg: 'bg-[#dcfce7] text-[#15803d]', isUnderlined: false }, // 7 Green
     { bg: 'bg-[#7c3aed]', text: 'text-white', light: '#ede9fe', textColor: '#6d28d9', tagBg: 'bg-[#ede9fe] text-[#6d28d9]', isUnderlined: false }, // 8 Deep Purple
     { bg: 'bg-[#e11d48]', text: 'text-white', light: '#ffe4e6', textColor: '#be123c', tagBg: 'bg-[#ffe4e6] text-[#be123c]', isUnderlined: false }, // 9 Crimson/Rose
-    { bg: 'bg-[#0284c7]', text: 'text-white', light: '#e0f2fe', textColor: '#0369a1', tagBg: 'bg-[#e0f2fe] text-[#0369a1]', isUnderlined: true },  // 10 Sky/Cyan
+    { bg: 'bg-[#0284c7]', text: 'text-white', light: '#e0f2fe', textColor: '#0369a1', tagBg: 'bg-[#e0f2fe] text-[#0369a1]', isUnderlined: false }, // 10 Sky/Cyan
     { bg: 'bg-[#c026d3]', text: 'text-white', light: '#fae8ff', textColor: '#a21caf', tagBg: 'bg-[#fae8ff] text-[#a21caf]', isUnderlined: false }, // 11 Fuchsia
     { bg: 'bg-[#0891b2]', text: 'text-white', light: '#cffafe', textColor: '#0e7490', tagBg: 'bg-[#cffafe] text-[#0e7490]', isUnderlined: false }, // 12 Cyan
     { bg: 'bg-[#65a30d]', text: 'text-white', light: '#ecfccb', textColor: '#4d7c0f', tagBg: 'bg-[#ecfccb] text-[#4d7c0f]', isUnderlined: false }, // 13 Lime
@@ -768,27 +766,27 @@ export const TurnitinTopSourcesPage: React.FC<{
 
               {/* Column 2: Top Sources Summary */}
               <div>
-                <h3 className="text-[14px] font-bold text-slate-900 tracking-tight mb-2">
+                <h3 className="text-[14px] font-bold text-slate-950 tracking-tight mb-2">
                   Top Sources
                 </h3>
 
-                <div className="space-y-1.5 text-xs text-slate-800">
+                <div className="space-y-1.5 text-xs text-slate-900">
                   <div className="flex items-center gap-2">
-                    <span className="font-bold w-6 text-right text-[11.5px] text-slate-900">{sourceDist.internet}%</span>
-                    <Globe className="w-3.5 h-3.5 text-slate-500 shrink-0 ml-1" />
-                    <span className="text-[11px] font-medium text-slate-700">Internet sources</span>
+                    <span className="font-bold w-6 text-right text-[11.5px] text-slate-950">{sourceDist.internet}%</span>
+                    <Globe className="w-3.5 h-3.5 text-slate-700 shrink-0 ml-1" />
+                    <span className="text-[11px] font-semibold text-slate-900">Internet sources</span>
                   </div>
 
                   <div className="flex items-center gap-2">
-                    <span className="font-bold w-6 text-right text-[11.5px] text-slate-900">{sourceDist.publications}%</span>
-                    <BookOpen className="w-3.5 h-3.5 text-slate-500 shrink-0 ml-1" />
-                    <span className="text-[11px] font-medium text-slate-700">Publications</span>
+                    <span className="font-bold w-6 text-right text-[11.5px] text-slate-950">{sourceDist.publications}%</span>
+                    <BookOpen className="w-3.5 h-3.5 text-slate-700 shrink-0 ml-1" />
+                    <span className="text-[11px] font-semibold text-slate-900">Publications</span>
                   </div>
 
                   <div className="flex items-center gap-2">
-                    <span className="font-bold w-6 text-right text-[11.5px] text-slate-900">{sourceDist.studentPapers}%</span>
-                    <GraduationCap className="w-3.5 h-3.5 text-slate-500 shrink-0 ml-1" />
-                    <span className="text-[11px] font-medium text-slate-700">Submitted works (Student Papers)</span>
+                    <span className="font-bold w-6 text-right text-[11.5px] text-slate-950">{sourceDist.studentPapers}%</span>
+                    <GraduationCap className="w-3.5 h-3.5 text-slate-700 shrink-0 ml-1" />
+                    <span className="text-[11px] font-semibold text-slate-900">Submitted works (Student Papers)</span>
                   </div>
                 </div>
               </div>
@@ -800,10 +798,10 @@ export const TurnitinTopSourcesPage: React.FC<{
             {/* Bottom Half: Top Sources Detailed List (Full Width) */}
             <div className="space-y-2 flex-1">
               <div>
-                <h3 className="text-[14px] font-bold text-slate-900 tracking-tight">
+                <h3 className="text-[14px] font-bold text-slate-950 tracking-tight">
                   Top Sources
                 </h3>
-                <p className="text-[10px] text-slate-500 mt-0.5">
+                <p className="text-[10px] text-slate-700 font-normal mt-0.5">
                   The sources with the highest number of matches within the submission. Overlapping sources will not be displayed.
                 </p>
               </div>
@@ -825,25 +823,25 @@ export const TurnitinTopSourcesPage: React.FC<{
                       key={`${s.id}-${currentIdx}`}
                       className="pb-1 border-b border-slate-100 last:border-b-0 space-y-0.5"
                     >
-                      {/* Line 1: Badge Pill & Source Type Tag */}
+                      {/* Line 1: Badge Pill, Percentage & Source Type Tag on the LEFT */}
                       <div className="flex items-center gap-2">
                         <span
                           className={`inline-flex items-center justify-center px-2.5 py-0.5 rounded-full text-[9px] font-bold text-white leading-none shadow-2xs ${badge.bg}`}
                         >
                           {currentIdx}
                         </span>
-                        <span className={`px-2 py-0.5 rounded-full text-[8.5px] font-medium leading-none ${badge.tagBg}`}>
+                        <span className="text-[11.5px] font-bold text-slate-950 font-sans shrink-0">
+                          {displaySim}
+                        </span>
+                        <span className={`px-2 py-0.5 rounded-full text-[8.5px] font-semibold leading-none ${badge.tagBg}`}>
                           {typeLabel}
                         </span>
                       </div>
 
-                      {/* Line 2: Source Title & Percentage */}
-                      <div className="flex items-center justify-between gap-4">
-                        <span className="text-[10.5px] font-medium text-slate-900 truncate flex-1">
+                      {/* Line 2: Source Title */}
+                      <div className="pt-0.5">
+                        <span className="text-[10.5px] font-semibold text-slate-950 truncate block">
                           {s.name}
-                        </span>
-                        <span className="text-[11px] font-bold text-slate-900 shrink-0 font-sans">
-                          {displaySim}
                         </span>
                       </div>
                     </div>
@@ -856,10 +854,10 @@ export const TurnitinTopSourcesPage: React.FC<{
           /* Multi-page continuation of sources (Pages 4, 5, etc.) */
           <div className="space-y-3 flex-1 flex flex-col justify-start">
             <div>
-              <h3 className="text-[14px] font-bold text-slate-900 tracking-tight">
+              <h3 className="text-[14px] font-bold text-slate-950 tracking-tight">
                 Top Sources
               </h3>
-              <p className="text-[10px] text-slate-500 mt-0.5">
+              <p className="text-[10px] text-slate-700 font-normal mt-0.5">
                 The sources with the highest number of matches within the submission. Overlapping sources will not be displayed.
               </p>
             </div>
@@ -881,23 +879,25 @@ export const TurnitinTopSourcesPage: React.FC<{
                     key={`${s.id}-${currentIdx}`}
                     className="pb-1 border-b border-slate-100 last:border-b-0 space-y-0.5"
                   >
+                    {/* Line 1: Badge Pill, Percentage & Source Type Tag on the LEFT */}
                     <div className="flex items-center gap-2">
                       <span
                         className={`inline-flex items-center justify-center px-2.5 py-0.5 rounded-full text-[9px] font-bold text-white leading-none shadow-2xs ${badge.bg}`}
                       >
                         {currentIdx}
                       </span>
-                      <span className={`px-2 py-0.5 rounded-full text-[8.5px] font-medium leading-none ${badge.tagBg}`}>
+                      <span className="text-[11.5px] font-bold text-slate-950 font-sans shrink-0">
+                        {displaySim}
+                      </span>
+                      <span className={`px-2 py-0.5 rounded-full text-[8.5px] font-semibold leading-none ${badge.tagBg}`}>
                         {typeLabel}
                       </span>
                     </div>
 
-                    <div className="flex items-center justify-between gap-4">
-                      <span className="text-[10.5px] font-medium text-slate-900 truncate flex-1">
+                    {/* Line 2: Source Title */}
+                    <div className="pt-0.5">
+                      <span className="text-[10.5px] font-semibold text-slate-950 truncate block">
                         {s.name}
-                      </span>
-                      <span className="text-[11px] font-bold text-slate-900 shrink-0 font-sans">
-                        {displaySim}
                       </span>
                     </div>
                   </div>

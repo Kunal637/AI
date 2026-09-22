@@ -1,22 +1,34 @@
 import * as pdfjsLib from 'pdfjs-dist';
+// @ts-ignore
+import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
-// Set up worker source with cdnjs (version 4.4.168)
+// Set up local bundled worker source via Vite
 if (typeof window !== 'undefined') {
-  pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.worker.min.js`;
+  pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 }
 
 // In-memory cache to avoid re-rasterizing on every re-render or tab switch
 const renderedPdfCache = new Map<string, string[]>();
 
-export function cleanBase64ToUint8Array(fileData: string): Uint8Array {
-  const cleanBase64 = fileData.includes(',') ? fileData.split(',')[1] : fileData;
-  const binary = atob(cleanBase64.replace(/[\r\n\s]/g, ''));
-  const len = binary.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) {
-    bytes[i] = binary.charCodeAt(i);
+export function cleanBase64ToUint8Array(fileData: any): Uint8Array {
+  if (fileData instanceof Uint8Array) return fileData;
+  if (fileData instanceof ArrayBuffer) return new Uint8Array(fileData);
+  if (typeof fileData !== 'string') return new Uint8Array(0);
+
+  try {
+    const cleanBase64 = fileData.includes(',') ? fileData.split(',')[1] : fileData;
+    const sanitized = cleanBase64.trim().replace(/[\r\n\s]/g, '');
+    const binary = atob(sanitized);
+    const len = binary.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+  } catch (err) {
+    console.error('Error decoding base64 PDF data:', err);
+    return new Uint8Array(0);
   }
-  return bytes;
 }
 
 /**

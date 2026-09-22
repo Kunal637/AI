@@ -78,6 +78,7 @@ export interface ScanReport {
   submissionId?: string;
   sources: MatchedSource[];
   contentSample: string;
+  text?: string;
   snippets: HighlightedSnippet[];
   institution?: string;
   submissionDate?: string;

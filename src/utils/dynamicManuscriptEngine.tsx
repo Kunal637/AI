@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useMemo } from 'react';
 import { ScanReport, MatchedSource } from '../types';
 import {
   TurnitinPageHeader,
@@ -6,14 +6,19 @@ import {
   getBadgeColor,
 } from '../components/TurnitinOfficialPages';
 import {
+  isTableOfContentsHeading,
+  isTableOfContentsEntry,
   isTableOfContentsText,
+  isTableHeadingOrCaption,
+  isTableRowOrData,
   isTableText,
   isQuoteText,
+  isBibliographyHeading,
+  isCitationLine,
   isBibliographyOrReferenceText,
   isExcludedFromHighlighting,
 } from './documentParser';
 import { isDanishDocument } from '../data/danishReport';
-import { renderPDFPagesToImages } from './pdfPageRenderer';
 
 export interface FormattedSegment {
   text: string;
@@ -140,27 +145,42 @@ export function paginateDocumentForTurnitin(
   mode: 'similarity' | 'ai'
 ): ManuscriptPageData[] {
   const isSimilarity = mode === 'similarity';
-  const rawText = report.contentSample || '';
+  const rawText = (report.text || report.contentSample || '').trim();
   const title = report.title || report.fileName || 'Academic Manuscript';
   const cleanTitle = title.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ');
   const excludeQuotes = report.excludeQuotes !== false;
   const excludeBibliography = report.excludeBibliography !== false;
   const isDanish = isDanishDocument(report.fileName || report.title);
 
-  // Determine number of manuscript pages
+  // Determine number of manuscript pages matching layout plan
   const targetManuscriptPages = isDanish
-    ? (mode === 'similarity' ? 13 : 12)
-    : Math.max(1, report.pageCount || (mode === 'similarity' ? 4 : 4));
+    ? 12
+    : Math.max(1, report.pageCount || 1);
 
   // Split into raw paragraphs
   let rawParagraphs = rawText
     .split(/\n\s*\n/)
     .map(p => p.trim())
-    .filter(p => p.length > 20);
+    .filter(p => p.length > 10);
 
-  // If text is short or sparse, expand with structured academic sections matching title
-  const requiredParagraphs = Math.max(6, targetManuscriptPages * 3);
-  if (rawParagraphs.length < requiredParagraphs) {
+  // If we have text but fewer paragraphs than pages, subdivide paragraphs by sentences so each page has real text
+  if (rawParagraphs.length > 0 && rawParagraphs.length < targetManuscriptPages) {
+    const subdivided: string[] = [];
+    for (const p of rawParagraphs) {
+      const sentences = p.match(/[^.!?]+[.!?]+(\s+|$)|[^.!?]+$/g) || [p];
+      if (sentences.length > 2 && subdivided.length + rawParagraphs.length <= targetManuscriptPages * 2) {
+        const mid = Math.ceil(sentences.length / 2);
+        subdivided.push(sentences.slice(0, mid).join('').trim());
+        subdivided.push(sentences.slice(mid).join('').trim());
+      } else {
+        subdivided.push(p);
+      }
+    }
+    rawParagraphs = subdivided;
+  }
+
+  // Only if document text is completely absent or trivial, provide standard academic sections
+  if (rawParagraphs.length === 0) {
     const fallbackSections = [
       `Abstract: This document investigates key methodological frameworks, empirical assessments, and systemic implications regarding ${cleanTitle}. Academic integrity standards dictate that all research citations maintain transparent provenance, structured verifiability, and traceable lineage across institutional repositories.`,
       `1. Introduction & Background: The systematic study of ${cleanTitle} has gained substantial attention across modern institutional peer review ecosystems. Forensic evaluation demonstrates that linguistic entropy and cross-corpus attribution provide vital signals when analyzing scholastic prose. As demonstrated in comparative literature, rigorous citation integrity safeguards academic original authorship.`,
@@ -178,6 +198,7 @@ export function paginateDocumentForTurnitin(
       `References\n[1] Anderson, R., & Moore, T. (2023). Empirical metrics in institutional peer verification. Journal of Academic Ethics, 18(4), 410–425.\n[2] Cavusoglu, H., & Mishra, B. (2024). Attribution integrity and forensic analysis in digital archives. Information Systems Research, 22(1), 89–104.\n[3] National Institute of Standards and Technology. (2022). Guidelines for Scholastic Provenance and Verification (NIST SP 800-160).\n[4] IEEE Computational Intelligence Society. (2025). Standards for Automated Text Attribution and Synthesis Classification. IEEE Std 2894-2025.\n[5] World Higher Education Consortium. (2024). Global Framework for Scholastic Authenticity in Higher Education. Geneva: WEC Publishing.`,
     ];
 
+    const requiredParagraphs = Math.max(6, targetManuscriptPages * 2);
     while (rawParagraphs.length < requiredParagraphs) {
       for (const section of fallbackSections) {
         if (rawParagraphs.length >= requiredParagraphs) break;
@@ -189,8 +210,8 @@ export function paginateDocumentForTurnitin(
   // Target paragraphs per page (usually 2-3 per page)
   const paragraphsPerPage = Math.max(2, Math.ceil(rawParagraphs.length / targetManuscriptPages));
 
-  // Determine plagiarism highlighting allocation strictly between 0% and 17%
-  const plagScore = Math.min(17, Math.max(0, report.plagiarismScore || 0));
+  // Determine plagiarism highlighting allocation strictly between 1% and 17%
+  const plagScore = Math.min(17, Math.max(1, report.plagiarismScore || 1));
   const aiScore = report.aiScore || 0;
 
   // Track sentence index for consistent highlight assignment
@@ -202,26 +223,53 @@ export function paginateDocumentForTurnitin(
   const splitParagraphs = rawParagraphs.map((paraText, pIdx) => {
     const trimmedPara = paraText.trim();
     // Check if paragraph is bibliography, TOC, or Table
-    if (isBibliographyOrReferenceText(trimmedPara)) {
+    if (isBibliographyHeading(trimmedPara) || isBibliographyOrReferenceText(trimmedPara)) {
       inBibSection = true;
     }
-    if (isTableOfContentsText(trimmedPara)) {
+    if (isTableOfContentsHeading(trimmedPara) || isTableOfContentsText(trimmedPara)) {
       inTocSection = true;
+    } else if (
+      inTocSection &&
+      /^[0-9]+\.\s+[A-Za-z]/.test(trimmedPara) &&
+      !trimmedPara.includes('....') &&
+      !/\d+$/.test(trimmedPara)
+    ) {
+      // TOC section ended, body text started
+      inTocSection = false;
     }
-    if (isTableText(trimmedPara)) {
+
+    if (isTableHeadingOrCaption(trimmedPara) || isTableText(trimmedPara)) {
       inTableBlock = true;
     } else if (inTableBlock && !trimmedPara.includes('|') && !trimmedPara.includes('\t')) {
       inTableBlock = false;
     }
 
-    const isHeading = /^[0-9]\.\s|^Abstract:|^Conclusion:|^References:|^References$|^Bibliography|^Figure\s[0-9]/i.test(paraText);
+    const isHeading =
+      /^[0-9]\.\s|^Abstract:|^Conclusion:|^References:|^References$|^Bibliography|^Figure\s[0-9]/i.test(
+        paraText
+      );
     const sentences = paraText.match(/[^.!?]+[.!?]+(\s+|$)|[^.!?]+$/g) || [paraText];
     const cleanedSentences = sentences.map(s => s.trim()).filter(s => s.length > 5);
 
     cleanedSentences.forEach(s => {
-      const isBib = inBibSection || isBibliographyOrReferenceText(s) || isBibliographyOrReferenceText(paraText);
-      const isToc = inTocSection || isTableOfContentsText(s) || isTableOfContentsText(paraText);
-      const isTable = inTableBlock || isTableText(s) || isTableText(paraText);
+      const isBib =
+        inBibSection ||
+        isBibliographyHeading(s) ||
+        isCitationLine(s) ||
+        isBibliographyOrReferenceText(s) ||
+        isBibliographyOrReferenceText(paraText);
+      const isToc =
+        inTocSection ||
+        isTableOfContentsHeading(s) ||
+        isTableOfContentsEntry(s) ||
+        isTableOfContentsText(s) ||
+        isTableOfContentsText(paraText);
+      const isTable =
+        inTableBlock ||
+        isTableHeadingOrCaption(s) ||
+        isTableRowOrData(s) ||
+        isTableText(s) ||
+        isTableText(paraText);
       const isQuote = isQuoteText(s);
       sentenceList.push({ text: s, paraIdx: pIdx, isToc, isQuote, isBib, isTable });
     });
@@ -246,10 +294,10 @@ export function paginateDocumentForTurnitin(
     eligibleIndices.push(i);
   }
 
-  // Decide which sentences are plagiarized (proportional to clamped plagScore 1-17%)
+  // Decide which sentences are plagiarized (proportional to clamped plagScore 1-17%, ensuring minimum coverage)
   const plagTargetCount =
     plagScore > 0 && eligibleIndices.length > 0
-      ? Math.max(1, Math.min(eligibleIndices.length, Math.round((plagScore / 100) * totalSentences)))
+      ? Math.max(2, Math.min(eligibleIndices.length, Math.round((plagScore / 100) * totalSentences)))
       : 0;
 
   const plagSentenceIndices = new Map<number, { sourceIndex: number; isBlue: boolean }>();
@@ -259,9 +307,9 @@ export function paginateDocumentForTurnitin(
     let assigned = 0;
     for (let i = 0; i < eligibleIndices.length && assigned < plagTargetCount; i += step) {
       const targetIdx = eligibleIndices[i];
-      // 1 in 4 matches is source 2 (blue underlined), others are source 1 (red)
-      const isBlue = assigned % 3 === 1;
-      const srcIdx = isBlue ? 2 : (assigned % 5 === 4 ? 3 : 1);
+      // 4-color highlighter rotation across 1, 2, 3, 4
+      const srcIdx = (assigned % 4) + 1;
+      const isBlue = srcIdx === 2;
       plagSentenceIndices.set(targetIdx, { sourceIndex: srcIdx, isBlue });
       assigned++;
 
@@ -274,11 +322,19 @@ export function paginateDocumentForTurnitin(
     }
   }
 
-  // Decide which sentences are AI highlighted (only if aiScore > 20)
-  const aiTargetCount =
-    aiScore > 20 && eligibleIndices.length > 0
-      ? Math.max(1, Math.min(eligibleIndices.length, Math.round((aiScore / 100) * totalSentences)))
-      : 0;
+  // Decide which sentences are AI highlighted according to user criteria:
+  // ai 1-20% result: (*%) no highlight in report (0% highlighted)
+  // ai 21-70%: 15% data light blue highlighter
+  // ai 0%: no highlighter
+  let aiTargetCount = 0;
+  if (aiScore >= 21 && aiScore <= 70) {
+    aiTargetCount = Math.max(2, Math.min(eligibleIndices.length, Math.round(0.15 * eligibleIndices.length)));
+  } else if (aiScore > 70) {
+    aiTargetCount = Math.max(2, Math.min(eligibleIndices.length, Math.round((aiScore / 100) * totalSentences)));
+  } else {
+    aiTargetCount = 0;
+  }
+
   const aiSentenceIndices = new Set<number>();
 
   if (aiTargetCount > 0 && eligibleIndices.length > 0) {
@@ -321,9 +377,9 @@ export function paginateDocumentForTurnitin(
           text: sText + ' ',
           isPlagiarized: true,
           sourceIndex: plagInfo.sourceIndex,
-          isBlueUnderlined: plagInfo.isBlue,
+          isBlueUnderlined: false,
         });
-      } else if (!isSimilarity && isAi && aiScore > 20) {
+      } else if (!isSimilarity && isAi && aiScore > 0) {
         segments.push({
           text: sText + ' ',
           isAi: true,
@@ -342,16 +398,22 @@ export function paginateDocumentForTurnitin(
     };
   });
 
-  // Distribute paragraphs into manuscript pages
+  // Distribute paragraphs into manuscript pages evenly
   const pages: ManuscriptPageData[] = [];
-  for (let mIdx = 0; mIdx < targetManuscriptPages; mIdx++) {
-    const startIdx = mIdx * paragraphsPerPage;
-    const endIdx = Math.min(formattedParagraphs.length, (mIdx + 1) * paragraphsPerPage);
-    let pageParas = formattedParagraphs.slice(startIdx, endIdx);
+  const totalParas = formattedParagraphs.length;
+  const parasPerBasePage = Math.floor(totalParas / targetManuscriptPages);
+  const remainder = totalParas % targetManuscriptPages;
 
-    // If last page has no paragraphs, borrow from previous
-    if (pageParas.length === 0 && formattedParagraphs.length > 0) {
-      pageParas = [formattedParagraphs[formattedParagraphs.length - 1]];
+  let currentParaIdx = 0;
+  for (let mIdx = 0; mIdx < targetManuscriptPages; mIdx++) {
+    const count = parasPerBasePage + (mIdx < remainder ? 1 : 0);
+    let pageParas = formattedParagraphs.slice(currentParaIdx, currentParaIdx + Math.max(1, count));
+    currentParaIdx += Math.max(1, count);
+
+    // Ensure every single manuscript page has at least one paragraph rendered
+    if (pageParas.length === 0 && totalParas > 0) {
+      const fallbackIdx = mIdx % totalParas;
+      pageParas = [formattedParagraphs[fallbackIdx]];
     }
 
     const words = pageParas.reduce(
@@ -384,42 +446,7 @@ export const DynamicTurnitinManuscriptPage: React.FC<{
   const submissionId = report.submissionId || 'trn:oid:::2:445438161';
   const sectionTitle = isSimilarity ? 'Submission' : 'AI Writing Submission';
 
-  const [pdfImages, setPdfImages] = useState<string[]>([]);
-  const [isLoadingPdf, setIsLoadingPdf] = useState<boolean>(false);
-
-  useEffect(() => {
-    let isMounted = true;
-    const isPdf =
-      report.fileData &&
-      (report.fileMimeType === 'application/pdf' ||
-        report.fileName?.toLowerCase().endsWith('.pdf') ||
-        report.title?.toLowerCase().endsWith('.pdf') ||
-        report.fileData.startsWith('JVBERi') ||
-        report.fileData.includes('JVBERi'));
-
-    if (isPdf && report.fileData) {
-      setIsLoadingPdf(true);
-      renderPDFPagesToImages(report.fileData)
-        .then(images => {
-          if (isMounted) {
-            setPdfImages(images);
-            setIsLoadingPdf(false);
-          }
-        })
-        .catch(err => {
-          console.warn('PDF.js rendering fallback to text layout:', err);
-          if (isMounted) setIsLoadingPdf(false);
-        });
-    } else {
-      setPdfImages([]);
-      setIsLoadingPdf(false);
-    }
-    return () => {
-      isMounted = false;
-    };
-  }, [report.fileData, report.fileMimeType, report.fileName, report.title]);
-
-  // Compute pages dynamically from inserted file content for fallback
+  // Compute pages dynamically from inserted file content
   const pagesData = useMemo(() => {
     return paginateDocumentForTurnitin(report, mode);
   }, [report, mode]);
@@ -442,61 +469,7 @@ export const DynamicTurnitinManuscriptPage: React.FC<{
     );
   };
 
-  // 1. PDF Pixel-Perfect Rendering: If original PDF page image is available, render exact page!
-  if (pdfImages.length > 0 && pdfImages[pageIndex]) {
-    return (
-      <div className="flex flex-col justify-between h-full min-h-[960px] font-sans p-6 sm:p-10 text-slate-900 bg-white relative select-text">
-        <TurnitinPageHeader
-          pageNumber={pageNumber}
-          totalPages={totalPages}
-          sectionTitle={sectionTitle}
-          submissionId={submissionId}
-        />
-
-        <div className="flex-1 my-auto flex items-center justify-center py-2 overflow-hidden bg-white">
-          <img
-            src={pdfImages[pageIndex]}
-            alt={`Page ${pageIndex + 1}`}
-            className="w-full h-auto object-contain max-h-[850px] rounded-xs border border-slate-100/60"
-            loading="lazy"
-          />
-        </div>
-
-        <TurnitinPageFooter
-          pageNumber={pageNumber}
-          totalPages={totalPages}
-          sectionTitle={sectionTitle}
-          submissionId={submissionId}
-        />
-      </div>
-    );
-  }
-
-  // 2. Loading State
-  if (isLoadingPdf) {
-    return (
-      <div className="flex flex-col justify-between h-full min-h-[960px] font-sans p-6 sm:p-10 text-slate-900 bg-white relative">
-        <TurnitinPageHeader
-          pageNumber={pageNumber}
-          totalPages={totalPages}
-          sectionTitle={sectionTitle}
-          submissionId={submissionId}
-        />
-        <div className="flex-1 flex flex-col items-center justify-center gap-3 py-20">
-          <div className="w-8 h-8 border-3 border-slate-200 border-t-[#0066ff] rounded-full animate-spin" />
-          <p className="text-xs text-slate-500 font-medium">Rendering original PDF page...</p>
-        </div>
-        <TurnitinPageFooter
-          pageNumber={pageNumber}
-          totalPages={totalPages}
-          sectionTitle={sectionTitle}
-          submissionId={submissionId}
-        />
-      </div>
-    );
-  }
-
-  // 3. Fallback to rich HTML paragraph layout for non-PDF files
+  // Rich HTML paragraph layout with 4-color highlighters and AI highlighters
   return (
     <div className="flex flex-col justify-between h-full min-h-[960px] font-sans p-6 sm:p-10 text-slate-900 bg-white relative select-text">
       <TurnitinPageHeader
@@ -554,53 +527,73 @@ export const DynamicTurnitinManuscriptPage: React.FC<{
                   {para.segments.map((seg, sIdx) => {
                     if (isSimilarity && seg.isPlagiarized) {
                       const srcNum = seg.sourceIndex || 1;
-                      const isBlue = seg.isBlueUnderlined;
 
-                      if (isBlue) {
+                      // 4-color highlighter: 1 (Pink/Red), 2 (Blue), 3 (Emerald/Green), 4 (Purple)
+                      // Badges appear on the LEFT side of the highlighted text
+                      if (srcNum === 1) {
                         return (
                           <span
                             key={`seg-${sIdx}`}
-                            style={{
-                              backgroundColor: '#dbeafe', // light blue highlight under text
-                              color: '#1d4ed8',           // dark blue text
-                            }}
-                            className="underline decoration-[#2563eb] decoration-1 underline-offset-2 rounded-xs px-1 py-0.5 inline font-normal"
+                            style={{ backgroundColor: '#fca5a5', color: '#991b1b' }}
+                            className="rounded-xs px-1 py-0.5 inline font-normal"
                           >
-                            {seg.text}
-                            <span className="inline-flex items-center justify-center w-3 h-3 rounded-full text-[7.5px] font-bold font-mono bg-[#2563eb] text-white ml-0.5 align-baseline">
+                            <span className="inline-flex items-center justify-center w-3 h-3 rounded-full text-[7.5px] font-bold font-mono bg-[#dc2626] text-white mr-1 align-baseline">
                               {srcNum}
                             </span>
+                            {seg.text}
+                          </span>
+                        );
+                      } else if (srcNum === 2) {
+                        return (
+                          <span
+                            key={`seg-${sIdx}`}
+                            style={{ backgroundColor: '#93c5fd', color: '#1e3a8a' }}
+                            className="rounded-xs px-1 py-0.5 inline font-normal"
+                          >
+                            <span className="inline-flex items-center justify-center w-3 h-3 rounded-full text-[7.5px] font-bold font-mono bg-[#2563eb] text-white mr-1 align-baseline">
+                              {srcNum}
+                            </span>
+                            {seg.text}
+                          </span>
+                        );
+                      } else if (srcNum === 3) {
+                        return (
+                          <span
+                            key={`seg-${sIdx}`}
+                            style={{ backgroundColor: '#86efac', color: '#064e3b' }}
+                            className="rounded-xs px-1 py-0.5 inline font-normal"
+                          >
+                            <span className="inline-flex items-center justify-center w-3 h-3 rounded-full text-[7.5px] font-bold font-mono bg-[#059669] text-white mr-1 align-baseline">
+                              {srcNum}
+                            </span>
+                            {seg.text}
+                          </span>
+                        );
+                      } else {
+                        return (
+                          <span
+                            key={`seg-${sIdx}`}
+                            style={{ backgroundColor: '#d8b4fe', color: '#4c1d95' }}
+                            className="rounded-xs px-1 py-0.5 inline font-normal"
+                          >
+                            <span className="inline-flex items-center justify-center w-3 h-3 rounded-full text-[7.5px] font-bold font-mono bg-[#7c3aed] text-white mr-1 align-baseline">
+                              {srcNum}
+                            </span>
+                            {seg.text}
                           </span>
                         );
                       }
-
-                      // Default & Primary: Red text with light red highlight under text
-                      return (
-                        <span
-                          key={`seg-${sIdx}`}
-                          style={{
-                            backgroundColor: '#fee2e2', // light red highlight under text
-                            color: '#b91c1c',           // red text
-                          }}
-                          className="rounded-xs px-1 py-0.5 inline font-normal"
-                        >
-                          {seg.text}
-                          <span className="inline-flex items-center justify-center w-3 h-3 rounded-full text-[7.5px] font-bold font-mono bg-[#dc2626] text-white ml-0.5 align-baseline">
-                            {srcNum}
-                          </span>
-                        </span>
-                      );
                     }
 
-                    if (!isSimilarity && seg.isAi && report.aiScore > 20) {
+                    if (!isSimilarity && seg.isAi && report.aiScore >= 21) {
                       return (
                         <span
                           key={`seg-${sIdx}`}
                           style={{
-                            backgroundColor: '#cffafe', // Turnitin official cyan AI highlight
-                            color: '#0369a1',           // dark cyan text
+                            backgroundColor: '#93c5fd', // prominent light blue highlight for AI detection
+                            color: '#1e3a8a',           // dark blue text
                           }}
-                          className="border-b-2 border-[#0284c7] rounded-xs px-1 py-0.5 inline font-normal"
+                          className="rounded-xs px-1 py-0.5 inline font-normal"
                         >
                           {seg.text}
                         </span>

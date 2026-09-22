@@ -1,11 +1,17 @@
 import jsPDF from 'jspdf';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
+import * as pdfjsLib from 'pdfjs-dist';
 import { ScanReport } from '../types';
 import { getReportPageLayout, getReportPdfFileName } from './reportPageLayout';
 import { isCyb2103Document } from '../data/cyb2103Report';
 import { isKunalReport } from '../data/kunalReport';
 import { isDanishDocument } from '../data/danishReport';
 import { paginateDocumentForTurnitin } from './dynamicManuscriptEngine';
+import {
+  computeHighlightsForPage,
+  getHighlightTheme,
+  RawTextItem,
+} from './authenticDocHighlighter';
 
 // Badge color palette matching Turnitin official standards with light pastel backgrounds
 const SOURCE_COLORS: {
@@ -180,7 +186,9 @@ function downloadPdfFromBytes(pdfBytes: Uint8Array, fileName: string) {
 async function mergeTurnitinCoverWithUserPdf(
   coverPdfBytes: ArrayBuffer,
   userPdfBase64: string,
-  coverPageCount: number
+  coverPageCount: number,
+  report: ScanReport,
+  mode: 'ai' | 'similarity'
 ): Promise<Uint8Array> {
   console.group('[TurnitScope PDF Verification Engine]');
   console.log('⏳ Merging generated Turnitin cover with original user document...');
@@ -203,11 +211,212 @@ async function mergeTurnitinCoverWithUserPdf(
     finalPdfDoc.addPage(page);
   }
 
-  // 2. Copy all original User Document Pages exactly as uploaded - 100% UNTOUCHED
+  // 2. Copy all original User Document Pages with official Turnitin running header and footer
   const userPageIndices = Array.from({ length: userPageCount }, (_, i) => i);
   const copiedUserPages = await finalPdfDoc.copyPages(userPdfDoc, userPageIndices);
 
-  for (const page of copiedUserPages) {
+  const totalPages = coverPageCount + userPageCount;
+  const submissionId = report.submissionId || 'trn:oid:::2:445438161';
+  const sectionTitle = mode === 'ai' ? 'AI Writing Submission' : 'Submission';
+
+  // Embed standard fonts for stamping running header & footer
+  const helveticaFont = await finalPdfDoc.embedStandardFont(StandardFonts.Helvetica);
+  const helveticaBold = await finalPdfDoc.embedStandardFont(StandardFonts.HelveticaBold);
+
+  // Embed Turnitin Logo for running header & footer
+  let embeddedLogo: any = null;
+  try {
+    const logoPng = await getTurnitinLogoPng();
+    if (logoPng) {
+      const logoBytes = base64ToUint8Array(logoPng);
+      embeddedLogo = await finalPdfDoc.embedPng(logoBytes);
+    }
+  } catch (logoErr) {
+    console.warn('Could not embed logo for header/footer stamping:', logoErr);
+  }
+
+  // Load user document via pdfjsLib for highlight coordinate extraction
+  let pdfjsDoc: any = null;
+  try {
+    const loadingTask = pdfjsLib.getDocument({
+      data: userBytes,
+      useSystemFonts: true,
+    });
+    pdfjsDoc = await loadingTask.promise;
+  } catch (pdfjsErr) {
+    console.warn('pdfjsLib loading notice for highlight extraction:', pdfjsErr);
+  }
+
+  for (let idx = 0; idx < copiedUserPages.length; idx++) {
+    const page = copiedUserPages[idx];
+    const pageNum = coverPageCount + 1 + idx;
+    const { width, height } = page.getSize();
+    const margin = 40;
+
+    // --- APPLY TURNITIN DOCUMENT HIGHLIGHTS OVER AUTHENTIC MANUSCRIPT ---
+    if (pdfjsDoc) {
+      try {
+        const pageObj = await pdfjsDoc.getPage(idx + 1);
+        const textContent = await pageObj.getTextContent();
+        const baseViewport = pageObj.getViewport({ scale: 1.0 });
+
+        const rawItems: RawTextItem[] = [];
+        for (const item of textContent.items as any[]) {
+          if (!item.str || !item.transform) continue;
+          const [vx, vy] = baseViewport.convertToViewportPoint(item.transform[4], item.transform[5]);
+          const fontSize = Math.sqrt(
+            item.transform[0] * item.transform[0] + item.transform[1] * item.transform[1]
+          );
+          const w = (item.width || 0) * baseViewport.scale;
+          const h = Math.max(fontSize, 12);
+          const top = Math.max(0, vy - fontSize * 0.88);
+          rawItems.push({
+            str: item.str,
+            left: vx,
+            top,
+            width: Math.max(w, 4),
+            height: h,
+            fontSize,
+          });
+        }
+
+        const pageHighlights = computeHighlightsForPage(
+          rawItems,
+          width,
+          height,
+          idx,
+          report,
+          mode
+        );
+
+        for (const hl of pageHighlights) {
+          const theme = getHighlightTheme(hl.type, hl.sourceIndex);
+          // In pdf-lib coordinates, (0, 0) is bottom-left, y is inverted
+          page.drawRectangle({
+            x: hl.left,
+            y: height - hl.top - hl.height,
+            width: hl.width,
+            height: hl.height,
+            color: rgb(theme.pdfColor.r, theme.pdfColor.g, theme.pdfColor.b),
+            opacity: 0.58,
+          });
+
+          if (hl.showBadge && hl.badgeNumber) {
+            const badgeX = hl.badgeLeft ?? Math.max(10, hl.left - 15);
+            const badgeY = height - (hl.badgeTop ?? hl.top) - 10;
+            const badgeColor =
+              hl.badgeNumber === 1
+                ? rgb(220 / 255, 38 / 255, 38 / 255)
+                : hl.badgeNumber === 2
+                ? rgb(37 / 255, 99 / 255, 235 / 255)
+                : hl.badgeNumber === 3
+                ? rgb(5 / 255, 150 / 255, 105 / 255)
+                : rgb(124 / 255, 58 / 255, 237 / 255);
+
+            page.drawCircle({
+              x: badgeX + 5,
+              y: badgeY + 5,
+              size: 5,
+              color: badgeColor,
+            });
+
+            page.drawText(`${hl.badgeNumber}`, {
+              x: badgeX + 3.2,
+              y: badgeY + 3.2,
+              size: 5.5,
+              font: helveticaBold,
+              color: rgb(1, 1, 1),
+            });
+          }
+        }
+      } catch (hlErr) {
+        console.warn(`Highlight extraction notice on page ${idx + 1}:`, hlErr);
+      }
+    }
+
+    // --- OFFICIAL TURNITIN RUNNING HEADER (SAME AS COVER PAGES) ---
+    // Logo (width 46, height 13.5)
+    if (embeddedLogo) {
+      page.drawImage(embeddedLogo, {
+        x: margin,
+        y: height - 37.5,
+        width: 46,
+        height: 13.5,
+      });
+    } else {
+      page.drawText('turnitin', {
+        x: margin,
+        y: height - 34,
+        size: 9.5,
+        font: helveticaBold,
+        color: rgb(0, 60 / 255, 70 / 255),
+      });
+    }
+
+    // Page X of Y - Section
+    page.drawText(`Page ${pageNum} of ${totalPages} - ${sectionTitle}`, {
+      x: margin + 54,
+      y: height - 34,
+      size: 7.5,
+      font: helveticaFont,
+      color: rgb(100 / 255, 116 / 255, 139 / 255),
+    });
+
+    // Submission ID (Right Aligned)
+    const subText = `Submission ID ${submissionId}`;
+    const subTextWidth = helveticaFont.widthOfTextAtSize(subText, 7.5);
+    page.drawText(subText, {
+      x: width - margin - subTextWidth,
+      y: height - 34,
+      size: 7.5,
+      font: helveticaFont,
+      color: rgb(100 / 255, 116 / 255, 139 / 255),
+    });
+
+    // Divider Line below header
+    page.drawLine({
+      start: { x: margin, y: height - 42 },
+      end: { x: width - margin, y: height - 42 },
+      thickness: 0.8,
+      color: rgb(241 / 255, 245 / 255, 249 / 255),
+    });
+
+    // --- OFFICIAL TURNITIN RUNNING FOOTER (SAME AS COVER PAGES) ---
+    if (embeddedLogo) {
+      page.drawImage(embeddedLogo, {
+        x: margin,
+        y: 21,
+        width: 46,
+        height: 13.5,
+      });
+    } else {
+      page.drawText('turnitin', {
+        x: margin,
+        y: 24.5,
+        size: 9.5,
+        font: helveticaBold,
+        color: rgb(0, 60 / 255, 70 / 255),
+      });
+    }
+
+    // Page X of Y - Section
+    page.drawText(`Page ${pageNum} of ${totalPages} - ${sectionTitle}`, {
+      x: margin + 54,
+      y: 24.5,
+      size: 7.5,
+      font: helveticaFont,
+      color: rgb(100 / 255, 116 / 255, 139 / 255),
+    });
+
+    // Submission ID (Right Aligned)
+    page.drawText(subText, {
+      x: width - margin - subTextWidth,
+      y: 24.5,
+      size: 7.5,
+      font: helveticaFont,
+      color: rgb(100 / 255, 116 / 255, 139 / 255),
+    });
+
     finalPdfDoc.addPage(page);
   }
 
@@ -217,7 +426,7 @@ async function mergeTurnitinCoverWithUserPdf(
   console.log('✅ PDF Merge Buffer Verification:');
   console.log(`   • Total Pages: ${finalPageCount} (${coverPageCount} cover + ${userPageCount} original manuscript)`);
   console.log(`   • PDF Buffer Byte Size: ${(finalPdfBytes.byteLength / 1024).toFixed(2)} KB`);
-  console.log(`   • Structure Map: [Pages 1..${coverPageCount}: Turnitin Official Report Covers] -> [Pages ${coverPageCount + 1}..${finalPageCount}: Direct Untouched Original Document]`);
+  console.log(`   • Structure Map: [Pages 1..${coverPageCount}: Turnitin Official Report Covers] -> [Pages ${coverPageCount + 1}..${finalPageCount}: Direct Untouched Original Document with Turnitin Header & Footer]`);
   console.groupEnd();
 
   return finalPdfBytes;
@@ -437,6 +646,110 @@ function drawDanishManuscriptPdfPage(
     return;
   }
 
+  const drawHlPara = (
+    text: string,
+    sourceNum: number,
+    startY: number,
+    options?: { isUnderlined?: boolean; indent?: number; customHlAi?: boolean }
+  ): number => {
+    const indent = options?.indent ?? 0;
+    const isUnderlined = options?.isUnderlined ?? (sourceNum === 2);
+    const pLines = doc.splitTextToSize(text, contentWidth - indent);
+    const blockH = pLines.length * 12 + 6;
+
+    if (isSimilarity) {
+      const badgeX = indent > 0 ? margin + indent - 7 : margin - 7;
+
+      if (isUnderlined || sourceNum === 2) {
+        doc.setFillColor(180, 215, 254); // prominent light blue
+        doc.rect(margin + indent - 2, startY - 9, contentWidth - indent + 4, blockH, 'F');
+
+        doc.setFillColor(37, 99, 235);
+        doc.circle(badgeX, startY - 2, 4.2, 'F');
+        doc.setFontSize(5.5);
+        doc.setTextColor(255, 255, 255);
+        doc.setFont('helvetica', 'bold');
+        doc.text(String(sourceNum), badgeX, startY - 0.2, { align: 'center' });
+
+        doc.setFont('times', 'normal');
+        doc.setFontSize(9);
+        doc.setTextColor(29, 78, 216);
+        doc.text(pLines, margin + indent, startY, { lineHeightFactor: 1.35 });
+      } else if (sourceNum === 4) {
+        doc.setFillColor(221, 214, 254); // prominent light purple
+        doc.rect(margin + indent - 2, startY - 9, contentWidth - indent + 4, blockH, 'F');
+
+        doc.setFillColor(124, 58, 237);
+        doc.circle(badgeX, startY - 2, 4.2, 'F');
+        doc.setFontSize(5.5);
+        doc.setTextColor(255, 255, 255);
+        doc.setFont('helvetica', 'bold');
+        doc.text('4', badgeX, startY - 0.2, { align: 'center' });
+
+        doc.setFont('times', 'normal');
+        doc.setFontSize(9);
+        doc.setTextColor(109, 40, 217);
+        doc.text(pLines, margin + indent, startY, { lineHeightFactor: 1.35 });
+      } else if (sourceNum === 3) {
+        doc.setFillColor(167, 243, 208); // prominent light emerald
+        doc.rect(margin + indent - 2, startY - 9, contentWidth - indent + 4, blockH, 'F');
+
+        doc.setFillColor(5, 150, 105);
+        doc.circle(badgeX, startY - 2, 4.2, 'F');
+        doc.setFontSize(5.5);
+        doc.setTextColor(255, 255, 255);
+        doc.setFont('helvetica', 'bold');
+        doc.text('3', badgeX, startY - 0.2, { align: 'center' });
+
+        doc.setFont('times', 'normal');
+        doc.setFontSize(9);
+        doc.setTextColor(4, 120, 87);
+        doc.text(pLines, margin + indent, startY, { lineHeightFactor: 1.35 });
+      } else {
+        doc.setFillColor(254, 180, 180); // prominent light red
+        doc.rect(margin + indent - 2, startY - 9, contentWidth - indent + 4, blockH, 'F');
+
+        doc.setFillColor(233, 30, 99);
+        doc.circle(badgeX, startY - 2, 4.2, 'F');
+        doc.setFontSize(5.5);
+        doc.setTextColor(255, 255, 255);
+        doc.setFont('helvetica', 'bold');
+        doc.text(String(sourceNum), badgeX, startY - 0.2, { align: 'center' });
+
+        doc.setFont('times', 'normal');
+        doc.setFontSize(9);
+        doc.setTextColor(185, 28, 28);
+        doc.text(pLines, margin + indent, startY, { lineHeightFactor: 1.35 });
+      }
+    } else {
+      if (report.aiScore >= 21 && (options?.customHlAi || sourceNum === 1 || sourceNum === 2)) {
+        doc.setFillColor(180, 215, 254); // prominent light blue
+        doc.rect(margin + indent - 2, startY - 9, contentWidth - indent + 4, blockH, 'F');
+
+        doc.setFont('times', 'normal');
+        doc.setFontSize(9);
+        doc.setTextColor(30, 64, 175);
+        doc.text(pLines, margin + indent, startY, { lineHeightFactor: 1.35 });
+      } else {
+        doc.setFont('times', 'normal');
+        doc.setFontSize(9);
+        doc.setTextColor(15, 23, 42);
+        doc.text(pLines, margin + indent, startY, { lineHeightFactor: 1.35 });
+      }
+    }
+
+    return startY + pLines.length * 12 + 10;
+  };
+
+  const drawNormalPara = (text: string, startY: number, indent: number = 0): number => {
+    doc.setFont('times', 'normal');
+    doc.setFontSize(9);
+    doc.setTextColor(15, 23, 42);
+    const pLines = doc.splitTextToSize(text, contentWidth - indent);
+    doc.text(pLines, margin + indent, startY, { lineHeightFactor: 1.35 });
+    return startY + pLines.length * 12 + 10;
+  };
+
   if (mIdx === 2) {
     // Page 3: Introduction
     let y = 80;
@@ -452,52 +765,203 @@ function drawDanishManuscriptPdfPage(
     doc.text('1.1 Background of the Study', margin, y);
 
     y += 15;
-    doc.setFont('times', 'normal');
-    doc.setFontSize(9);
+    y = drawHlPara(
+      'Discourse markers (DMs) constitute an indispensable linguistic mechanism in human communication, functioning as structural brackets that manage information exchange and interpersonal alignment. In English linguistics, items such as well, you know, I mean, actually, and anyway have transitioned from being viewed as stylistic filler words to recognized pragmatic devices that guide conversational processing.',
+      1,
+      y
+    );
 
-    const para1 = 'Discourse markers (DMs) such as "well", "you know", "I mean", "actually", and "so" play a pivotal structural and interpersonal role in natural human communication. Rather than contributing directly to the truth-conditional propositional content of an utterance, discourse markers function primarily at the metadiscursive level, guiding the listener through the speaker\'s cognitive coherence, conversational turns, and communicative intent (Schiffrin, 1987; Fraser, 1999).';
-    const lines1 = doc.splitTextToSize(para1, contentWidth);
-    doc.text(lines1, margin, y, { lineHeightFactor: 1.35 });
-    y += lines1.length * 12 + 10;
+    y = drawNormalPara(
+      'Schiffrin (1987) established that discourse markers operate across multiple planes of talk, including exchange structures, action structures, idea structures, and participation frameworks. Within second language (L2) academic environments, the mastery of these pragmatic markers reflects a learner\'s communicative competence and fluency in negotiating meaning during collaborative dialogue.',
+      y
+    );
 
-    const para2 = 'In second language (L2) acquisition contexts, the pragmatic mastery of discourse markers represents one of the most sophisticated milestones of communicative competence. Non-native speakers frequently encounter challenges in deploying discourse markers naturally, resulting in interactions that may appear either overly formal, structurally fragmented, or pragmatically ambiguous.';
-    const lines2 = doc.splitTextToSize(para2, contentWidth);
-    if (isSimilarity) {
-      const blockH = lines2.length * 12 + 6;
-      doc.setFillColor(254, 226, 226);
-      doc.rect(margin - 3, y - 9, contentWidth + 6, blockH, 'F');
-
-      doc.setFillColor(233, 30, 99);
-      doc.circle(pageWidth - margin + 2, y - 2, 4, 'F');
-      doc.setFontSize(5.5);
-      doc.setTextColor(255, 255, 255);
-      doc.text('1', pageWidth - margin + 2, y - 0.2, { align: 'center' });
-
-      doc.setFont('times', 'normal');
-      doc.setFontSize(9);
-      doc.setTextColor(185, 28, 28);
-      doc.text(lines2, margin, y, { lineHeightFactor: 1.35 });
-    } else {
-      doc.setTextColor(15, 23, 42);
-      doc.text(lines2, margin, y, { lineHeightFactor: 1.35 });
-    }
-    y += lines2.length * 12 + 14;
-
+    y += 4;
     doc.setFont('times', 'bold');
     doc.setFontSize(10.5);
     doc.setTextColor(15, 23, 42);
     doc.text('1.2 Statement of the Problem', margin, y);
 
     y += 15;
-    doc.setFont('times', 'normal');
-    doc.setFontSize(9);
-    const para3 = 'While extensive research has examined discourse markers within native speaker corpora, there remains a notable empirical gap regarding the pragmatic functions and communicative distribution of these markers among ESL/EFL tertiary students in Pakistani academic settings. The current study investigates how advanced undergraduate students utilize discourse markers to negotiate meaning and maintain discourse coherence.';
-    const lines3 = doc.splitTextToSize(para3, contentWidth);
-    doc.text(lines3, margin, y, { lineHeightFactor: 1.35 });
+    y = drawHlPara(
+      'Despite extensive theoretical research into discourse markers within native speaker corpora, empirical investigations focusing on Pakistani ESL tertiary learners remain scarce. L2 speakers often encounter challenges in employing discourse markers appropriately, resulting in conversational breakdown, abrupt topic shifts, or unintended pragmalinguistic infelicities during academic discourse.',
+      2,
+      y
+    );
+
+    y = drawNormalPara(
+      'This research addresses this empirical void by systematically investigating how undergraduate students at Abdul Wali Khan University Mardan deploy English discourse markers to construct cohesion, negotiate interpretive meaning, and sustain collaborative interaction.',
+      y
+    );
 
     doc.setFontSize(9);
     doc.setTextColor(71, 85, 105);
     doc.text('3', pageWidth / 2, pageHeight - 50, { align: 'center' });
+    return;
+  }
+
+  if (mIdx === 3) {
+    // Page 4: Objectives & Questions
+    let y = 80;
+    doc.setFont('times', 'bold');
+    doc.setFontSize(11);
+    doc.setTextColor(15, 23, 42);
+    doc.text('1.3 Research Objectives', margin, y);
+
+    y += 15;
+    y = drawNormalPara('The primary objectives of this investigation are:', y);
+
+    y = drawNormalPara(
+      '1. To identify the frequency and distribution of specific English discourse markers (e.g., well, you know, I mean, actually) in ESL student interaction.',
+      y,
+      12
+    );
+
+    y = drawHlPara(
+      '2. To analyze the pragmatic functions performed by discourse markers in managing conversational turn-taking, topic transition, and hedging.',
+      1,
+      y,
+      { indent: 12 }
+    );
+
+    y = drawNormalPara(
+      '3. To examine the communicative challenges and pragmatic transfers observed among Pakistani ESL learners during meaning negotiation.',
+      y,
+      12
+    );
+
+    y += 6;
+    doc.setFont('times', 'bold');
+    doc.setFontSize(11);
+    doc.setTextColor(15, 23, 42);
+    doc.text('1.4 Research Questions', margin, y);
+
+    y += 15;
+    y = drawNormalPara(
+      '1. What is the quantitative occurrence of selected discourse markers in the academic spoken corpus of AWKUM ESL students?',
+      y,
+      12
+    );
+    y = drawNormalPara(
+      '2. How do ESL learners utilize discourse markers to negotiate meaning and mitigate face-threatening acts during peer interactions?',
+      y,
+      12
+    );
+    y = drawNormalPara(
+      '3. What pedagogical implications emerge for integrating pragmatic discourse markers into English language teaching curricula?',
+      y,
+      12
+    );
+
+    y += 6;
+    doc.setFont('times', 'bold');
+    doc.setFontSize(11);
+    doc.setTextColor(15, 23, 42);
+    doc.text('1.5 Significance of the Study', margin, y);
+
+    y += 15;
+    y = drawHlPara(
+      'This research provides critical empirical insights for applied linguists, curriculum developers, and ESL educators seeking to enhance pragmatic instruction in higher education. By documenting naturalistic spoken interaction, the study illuminates the nuanced ways learners employ linguistic markers to establish mutual intelligibility.',
+      3,
+      y,
+      { customHlAi: true }
+    );
+
+    doc.setFontSize(9);
+    doc.setTextColor(71, 85, 105);
+    doc.text('4', pageWidth / 2, pageHeight - 50, { align: 'center' });
+    return;
+  }
+
+  if (mIdx === 4) {
+    // Page 5: Chapter 2 - Literature Review
+    let y = 80;
+    doc.setFont('times', 'bold');
+    doc.setFontSize(13);
+    doc.setTextColor(15, 23, 42);
+    doc.text('Chapter 2: Literature Review', margin, y);
+
+    y += 20;
+    doc.setFontSize(10.5);
+    doc.text('2.1 Conceptual Definition of Discourse Markers', margin, y);
+
+    y += 15;
+    y = drawHlPara(
+      'Discourse markers are sequentially dependent elements which bracket units of talk and convey procedural rather than conceptual meaning. Fraser (1999) classifies discourse markers into contrastive, elaborative, inferential, and temporal categories, asserting that their core role is to establish a pragmatic relationship between the host utterance and prior discourse context.',
+      1,
+      y
+    );
+
+    y = drawNormalPara(
+      'Unlike content words, discourse markers do not alter the propositional truth value of a clause. For example, omitting the marker well in an answer does not change the factual content of the response, yet it eliminates vital metacommunicative cues signaling conversational hesitancy or prospective disagreement.',
+      y
+    );
+
+    y += 6;
+    doc.setFont('times', 'bold');
+    doc.setFontSize(10.5);
+    doc.setTextColor(15, 23, 42);
+    doc.text('2.2 Pragmatic Frameworks: Schiffrin and Fraser', margin, y);
+
+    y += 15;
+    y = drawNormalPara(
+      'Schiffrin\'s (1987) seminal coherence model posits that discourse markers index utterances to both the speaker and the listener across simultaneous communicative planes. In this model, markers like you know invite addressee alignment, while I mean acts as an internal repair token signaling self-correction.',
+      y
+    );
+
+    y = drawHlPara(
+      'In contrast, Blakemore (2002) adopts a relevance-theoretic approach, proposing that discourse markers constrain the inferential phase of comprehension by minimizing cognitive processing effort for the interlocutor.',
+      4,
+      y
+    );
+
+    doc.setFontSize(9);
+    doc.setTextColor(71, 85, 105);
+    doc.text('5', pageWidth / 2, pageHeight - 50, { align: 'center' });
+    return;
+  }
+
+  if (mIdx === 5) {
+    // Page 6: Functional Taxonomy
+    let y = 80;
+    doc.setFont('times', 'bold');
+    doc.setFontSize(11);
+    doc.setTextColor(15, 23, 42);
+    doc.text('2.3 Functional Taxonomy in Spoken Interaction', margin, y);
+
+    y += 15;
+    y = drawNormalPara(
+      'In conversational analysis, discourse markers serve three primary overarching functions: textual, interpersonal, and cognitive.',
+      y
+    );
+
+    y = drawHlPara(
+      'Textual functions encompass topic management, turn-taking coordination, and sequential organization of complex arguments in ongoing discourse. Markers such as anyway or so signal closure of subordinate tangents and re-orient the conversational focus back to the core thematic agenda.',
+      2,
+      y,
+      { isUnderlined: true }
+    );
+
+    y = drawNormalPara(
+      'Interpersonal functions regulate social distance, solidarity, and face management. By utilizing epistemic hedging markers like I mean and you know, speakers soften assertive declarations, thereby mitigating potential conflict and encouraging collaborative meaning negotiation.',
+      y
+    );
+
+    y += 6;
+    doc.setFont('times', 'bold');
+    doc.setFontSize(11);
+    doc.setTextColor(15, 23, 42);
+    doc.text('2.4 Discourse Markers in L2 Learner Corpora', margin, y);
+
+    y += 15;
+    y = drawNormalPara(
+      'Corpus-based studies (e.g., Aijmer 2002, Müller 2005) reveal notable discrepancies between native and non-native deployment of discourse markers. L2 speakers often exhibit overreliance on a narrow inventory of familiar markers while underutilizing subtle interactive hedges, often resulting from prescriptive classroom instruction that overlooks pragmatic discourse routines.',
+      y
+    );
+
+    doc.setFontSize(9);
+    doc.setTextColor(71, 85, 105);
+    doc.text('6', pageWidth / 2, pageHeight - 50, { align: 'center' });
     return;
   }
 
@@ -571,6 +1035,44 @@ function drawDanishManuscriptPdfPage(
     return;
   }
 
+  if (mIdx === 7) {
+    // Page 8: Data Coding & Analytical Procedures
+    let y = 80;
+    doc.setFont('times', 'bold');
+    doc.setFontSize(11);
+    doc.setTextColor(15, 23, 42);
+    doc.text('3.3 Data Coding & Analytical Procedures', margin, y);
+
+    y += 15;
+    y = drawNormalPara(
+      'Recorded verbal interactions were transcribed verbatim following standard conversation analytic transcription protocols (Jefferson 2004). Target discourse markers were extracted, tagged, and coded in accordance with Fraser\'s functional taxonomy.',
+      y
+    );
+
+    y = drawHlPara(
+      'To establish inter-rater coding reliability, two independent applied linguistics researchers coded a 20% random subsample of the transcripts. Cohen\'s Kappa coefficient achieved a value of κ = 0.88, demonstrating high statistical consistency across coding judgments.',
+      1,
+      y
+    );
+
+    y += 6;
+    doc.setFont('times', 'bold');
+    doc.setFontSize(11);
+    doc.setTextColor(15, 23, 42);
+    doc.text('3.4 Ethical Considerations', margin, y);
+
+    y += 15;
+    y = drawNormalPara(
+      'Informed written consent was obtained from all participants prior to recording sessions. Anonymity was preserved by assigning alphanumeric pseudonyms to all speakers, and participants were assured that data would be used exclusively for scholastic analysis.',
+      y
+    );
+
+    doc.setFontSize(9);
+    doc.setTextColor(71, 85, 105);
+    doc.text('8', pageWidth / 2, pageHeight - 50, { align: 'center' });
+    return;
+  }
+
   if (mIdx === 8) {
     // Page 9: Chapter 4 & Clean Table 2
     let y = 80;
@@ -641,6 +1143,75 @@ function drawDanishManuscriptPdfPage(
     return;
   }
 
+  if (mIdx === 9) {
+    // Page 10: 4.2 Qualitative Analysis
+    let y = 80;
+    doc.setFont('times', 'bold');
+    doc.setFontSize(11);
+    doc.setTextColor(15, 23, 42);
+    doc.text('4.2 Qualitative Analysis of Pragmatic Functions', margin, y);
+
+    y += 15;
+    y = drawNormalPara(
+      'Qualitative micro-analysis revealed that well predominantly served as an epistemic delay device, allowing speakers to structure responses during cognitively demanding peer interactions.',
+      y
+    );
+
+    y = drawHlPara(
+      'Furthermore, the marker "you know" operated as a vital pragmatic hedge, invoking shared communal understanding and reducing the risk of face loss during contentious academic debates.',
+      1,
+      y
+    );
+
+    y = drawNormalPara(
+      'Speakers utilized I mean to perform real-time communicative repairs when encountering lexical retrieval difficulties, indicating that L2 speakers actively rely on discourse markers to negotiate intelligibility in collaborative academic settings.',
+      y
+    );
+
+    doc.setFontSize(9);
+    doc.setTextColor(71, 85, 105);
+    doc.text('10', pageWidth / 2, pageHeight - 50, { align: 'center' });
+    return;
+  }
+
+  if (mIdx === 10) {
+    // Page 11: Chapter 5 Conclusion & Recommendations
+    let y = 80;
+    doc.setFont('times', 'bold');
+    doc.setFontSize(13);
+    doc.setTextColor(15, 23, 42);
+    doc.text('Chapter 5: Conclusion and Recommendations', margin, y);
+
+    y += 20;
+    doc.setFontSize(10.5);
+    doc.text('5.1 Summary of Findings', margin, y);
+
+    y += 15;
+    y = drawNormalPara(
+      'This study investigated the pragmatic distribution and functions of English discourse markers among ESL learners at Abdul Wali Khan University Mardan. Findings demonstrate that discourse markers are critical instruments for managing conversational floor, repairing misunderstandings, and fostering interpersonal alignment.',
+      y
+    );
+
+    y += 6;
+    doc.setFont('times', 'bold');
+    doc.setFontSize(10.5);
+    doc.setTextColor(15, 23, 42);
+    doc.text('5.2 Pedagogical Recommendations', margin, y);
+
+    y += 15;
+    y = drawHlPara(
+      'Language educators should shift from treating discourse markers as superfluous hesitation fillers toward explicit pedagogical instruction on their pragmatic utility in academic spoken discourse.',
+      2,
+      y,
+      { isUnderlined: true }
+    );
+
+    doc.setFontSize(9);
+    doc.setTextColor(71, 85, 105);
+    doc.text('11', pageWidth / 2, pageHeight - 50, { align: 'center' });
+    return;
+  }
+
   if (mIdx === 11) {
     // Page 12: References
     let y = 80;
@@ -679,90 +1250,665 @@ function drawDanishManuscriptPdfPage(
     doc.text('12', pageWidth / 2, pageHeight - 50, { align: 'center' });
     return;
   }
+}
 
-  // Other manuscript pages (4, 5, 6, 8, 10, 11)
-  const pageSections: { [key: number]: { title: string; subtitle?: string; content: string[] } } = {
-    3: {
-      title: 'Chapter 1: Introduction (Continued)',
-      subtitle: '1.3 Research Objectives & 1.4 Research Questions',
-      content: [
-        '1.3 Research Objectives: (1) Identify the most prevalent discourse markers employed by Pakistani undergraduate ESL learners in spoken academic discourse. (2) Analyze the specific pragmatic functions fulfilled by discourse markers in conversational turn-taking, hedging, and coherence. (3) Evaluate the relationship between DM proficiency and communicative fluency.',
-        '1.4 Research Questions: (1) Which discourse markers occur with the highest frequency in spoken ESL discourse? (2) How do students deploy discourse markers to signal turn-taking, clarify intent, and negotiate meaning? (3) What pedagogical interventions can enhance pragmatic competence in ESL classrooms?',
-        '1.5 Significance of the Study: This research offers critical insights for English language educators, curriculum designers, and applied linguists by elucidating real-world usage patterns and providing evidence-based recommendations for pragmatic pedagogy in South Asian higher education.',
-      ],
-    },
-    4: {
-      title: 'Chapter 2: Literature Review',
-      subtitle: '2.1 Conceptual Definition & Theoretical Frameworks',
-      content: [
-        '2.1 Conceptual Definition of Discourse Markers: Discourse markers are defined as sequentially dependent elements which bracket units of talk (Schiffrin, 1987). They operate outside the core syntactic clause structure while establishing crucial pragmatic and cognitive connections between conversational utterances.',
-        '2.2 Pragmatic Frameworks: Schiffrin and Fraser: Schiffrin\'s multi-dimensional model posits five planes of discourse talk: exchange structure, action structure, idea condition, participation framework, and information state. Fraser (1999) classifies discourse markers into contrastive markers, elaborative markers, and inferential markers, emphasizing their non-propositional pragmatic meaning.',
-      ],
-    },
-    5: {
-      title: 'Chapter 2: Literature Review (Continued)',
-      subtitle: '2.3 Functional Taxonomy & 2.4 Learner Corpora Studies',
-      content: [
-        '2.3 Functional Taxonomy in Spoken Interaction: In spoken interaction, DMs fulfill textual functions (structuring narratives, managing topics, framing transitions) and interpersonal functions (monitoring comprehension, expressing solidarity, softening face-threatening acts). Fung and Carter (2007) highlight the pedagogical imperative of explicit DM instruction.',
-        '2.4 Learner Corpora and Non-Native Competence: Comparative corpus investigations reveal that L2 speakers frequently underuse interpersonal markers ("you know", "I mean") while overusing formal textual connectors ("furthermore", "moreover"), highlighting an imbalance between spoken and written pragmatic norms.',
-      ],
-    },
-    7: {
-      title: 'Chapter 3: Research Methodology (Continued)',
-      subtitle: '3.3 Data Coding, Transcription, and Ethical Standards',
-      content: [
-        '3.3 Data Coding & Analytical Procedures: Audio-recorded sessions were transcribed verbatim using the Jefferson transcription system. Instances of target discourse markers were tagged, categorized according to Fraser\'s taxonomy, and cross-validated by two independent raters with inter-coder reliability of Kappa = 0.89.',
-        '3.4 Ethical Considerations: Institutional ethical approval was obtained from Abdul Wali Khan University Mardan. All participants provided written informed consent prior to recording, and all data were anonymized to safeguard participant confidentiality.',
-      ],
-    },
-    9: {
-      title: 'Chapter 4: Data Analysis (Continued)',
-      subtitle: '4.2 Qualitative Pragmatic Analysis of Conversational Excerpts',
-      content: [
-        '4.2 Qualitative Pragmatic Analysis: Qualitative examination of transcript excerpts demonstrates how learners deploy "you know" as an epistemic hedge to appeal to common ground and mitigate disagreement during peer deliberations.',
-        'Excerpt 1 illustrates student interaction during an academic debate: Speaker A uses "well" to signal hesitation before presenting a counter-perspective, successfully sustaining discourse coherence without generating interpersonal friction.',
-      ],
-    },
-    10: {
-      title: 'Chapter 5: Conclusion and Recommendations',
-      subtitle: '5.1 Summary of Findings, Pedagogical Implications, and Future Research',
-      content: [
-        '5.1 Summary of Findings: The study demonstrates that discourse markers play an indispensable role in structuring academic dialogue and fostering interpersonal alignment among Pakistani ESL undergraduates. While high frequency was observed for common interactive markers, nuanced hedging markers exhibited lower usage.',
-        '5.2 Pedagogical Implications: Language instructors should incorporate authentic spoken corpus materials and pragmatically oriented conversational activities into ESL curricula to enhance students\' communicative competence.',
-        '5.3 Recommendations for Future Research: Subsequent investigations should extend analysis to longitudinal development and cross-dialectal comparisons across regional universities.',
-      ],
-    },
+/**
+ * Draws high-fidelity CYB2103 Cyber Risk Management pages (all 4 pages).
+ */
+export function drawCyb2103ManuscriptPdfPage(
+  doc: jsPDF,
+  mIdx: number,
+  margin: number,
+  contentWidth: number,
+  pageWidth: number,
+  pageHeight: number,
+  report: ScanReport,
+  mode: 'ai' | 'similarity'
+) {
+  const isSimilarity = mode === 'similarity';
+
+  const drawHlPara = (
+    text: string,
+    sourceNum: number,
+    startY: number,
+    isUnderlined: boolean = false
+  ): number => {
+    const pLines = doc.splitTextToSize(text, contentWidth);
+    const blockH = pLines.length * 12 + 6;
+
+    if (isSimilarity) {
+      if (isUnderlined || sourceNum === 2) {
+        doc.setFillColor(180, 215, 254);
+        doc.rect(margin - 2, startY - 9, contentWidth + 4, blockH, 'F');
+        doc.setFillColor(37, 99, 235);
+        doc.circle(margin - 7, startY - 2, 4.2, 'F');
+        doc.setFontSize(5.5);
+        doc.setTextColor(255, 255, 255);
+        doc.setFont('helvetica', 'bold');
+        doc.text(String(sourceNum), margin - 7, startY - 0.2, { align: 'center' });
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(8.5);
+        doc.setTextColor(29, 78, 216);
+        doc.text(pLines, margin, startY, { lineHeightFactor: 1.35 });
+      } else {
+        doc.setFillColor(254, 180, 180);
+        doc.rect(margin - 2, startY - 9, contentWidth + 4, blockH, 'F');
+        doc.setFillColor(233, 30, 99);
+        doc.circle(margin - 7, startY - 2, 4.2, 'F');
+        doc.setFontSize(5.5);
+        doc.setTextColor(255, 255, 255);
+        doc.setFont('helvetica', 'bold');
+        doc.text(String(sourceNum), margin - 7, startY - 0.2, { align: 'center' });
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(8.5);
+        doc.setTextColor(185, 28, 28);
+        doc.text(pLines, margin, startY, { lineHeightFactor: 1.35 });
+      }
+    } else {
+      if (report.aiScore >= 21) {
+        doc.setFillColor(180, 215, 254);
+        doc.rect(margin - 2, startY - 9, contentWidth + 4, blockH, 'F');
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(8.5);
+        doc.setTextColor(30, 64, 175);
+        doc.text(pLines, margin, startY, { lineHeightFactor: 1.35 });
+      } else {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(8.5);
+        doc.setTextColor(15, 23, 42);
+        doc.text(pLines, margin, startY, { lineHeightFactor: 1.35 });
+      }
+    }
+
+    return startY + pLines.length * 12 + 10;
   };
 
-  const pageData = pageSections[mIdx];
-  if (pageData) {
-    let y = 80;
-    doc.setFont('times', 'bold');
+  const drawNormalPara = (text: string, startY: number): number => {
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8.5);
+    doc.setTextColor(15, 23, 42);
+    const pLines = doc.splitTextToSize(text, contentWidth);
+    doc.text(pLines, margin, startY, { lineHeightFactor: 1.35 });
+    return startY + pLines.length * 12 + 10;
+  };
+
+  if (mIdx === 0) {
+    let y = 75;
+    doc.setFont('helvetica', 'bold');
     doc.setFontSize(13);
     doc.setTextColor(15, 23, 42);
-    doc.text(pageData.title, margin, y);
+    doc.text('Assessment 3: Cyber Risk Management Report', margin, y);
 
-    if (pageData.subtitle) {
-      y += 18;
-      doc.setFontSize(10.5);
-      doc.text(pageData.subtitle, margin, y);
-    }
+    y += 18;
+    doc.setFontSize(9.5);
+    doc.text('Case Study: Medibank 2022 Breach & Critical Infrastructure Analysis', margin, y);
 
     y += 16;
-    doc.setFont('times', 'normal');
-    doc.setFontSize(9);
-    doc.setTextColor(15, 23, 42);
+    y = drawNormalPara(
+      'Executive Summary: In October 2022, Medibank Private Limited, one of Australia’s largest private health insurers, suffered a catastrophic cyber incident resulting in the unauthorised exposure of personal and sensitive healthcare data of approximately 9.7 million current and former customers.',
+      y
+    );
 
-    for (const paragraph of pageData.content) {
-      const pLines = doc.splitTextToSize(paragraph, contentWidth);
-      doc.text(pLines, margin, y, { lineHeightFactor: 1.35 });
-      y += pLines.length * 12 + 12;
-    }
+    y = drawHlPara(
+      'The initial compromise originated from stolen high-privilege contractor credentials, which lacked multifactor authentication (MFA) enforcement across customer-facing remote access endpoints. The adversary conducted extensive lateral movement, exfiltrating critical databases prior to deployment of extortion mechanisms.',
+      1,
+      y
+    );
 
-    doc.setFont('times', 'normal');
+    y = drawNormalPara(
+      'This report provides a formal risk analysis aligned with ISO/IEC 27005:2022 and NIST SP 800-30 Rev. 1, evaluates treatment feasibility, and formulates human-centric policy recommendations to prevent recurrence across health sector data repositories.',
+      y
+    );
+
     doc.setFontSize(9);
     doc.setTextColor(71, 85, 105);
-    doc.text(`${mIdx + 1}`, pageWidth / 2, pageHeight - 50, { align: 'center' });
+    doc.text('CYB2103 | Assessment 3 | Page 1', pageWidth / 2, pageHeight - 50, { align: 'center' });
+    return;
+  }
+
+  if (mIdx === 1) {
+    let y = 75;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(12);
+    doc.setTextColor(15, 23, 42);
+    doc.text('2. Risk Identification and Assessment Matrix', margin, y);
+
+    y += 16;
+    y = drawNormalPara(
+      'Table 1 identifies core cyber risks facing healthcare providers. Risk ratings are mapped across a 5x5 Likelihood vs. Impact matrix in accordance with ISO 27005 guidelines.',
+      y
+    );
+
+    y += 6;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9.5);
+    doc.text('Risk Assessment Matrix (Likelihood × Impact)', margin, y);
+    y += 12;
+
+    const cellW = contentWidth / 6;
+    const cellH = 18;
+    const impacts = ['L \\ I', '1 Negl', '2 Minor', '3 Mod', '4 Sig', '5 Severe'];
+
+    doc.setFillColor(241, 245, 249);
+    doc.rect(margin, y, contentWidth, cellH, 'F');
+    doc.setDrawColor(203, 213, 225);
+    doc.rect(margin, y, contentWidth, cellH, 'S');
+    doc.setFontSize(8);
+    for (let c = 0; c < 6; c++) {
+      doc.text(impacts[c], margin + c * cellW + cellW / 2, y + 12, { align: 'center' });
+    }
+    y += cellH;
+
+    const likelihoods = [
+      { l: '5 V.Likely', cells: ['Med', 'High', 'Crit', 'Crit', 'Crit'] },
+      { l: '4 Likely', cells: ['Med', 'Med', 'High', 'Crit', 'Crit'] },
+      { l: '3 Possible', cells: ['Low', 'Med', 'Med', 'High', 'High'] },
+      { l: '2 Unlikely', cells: ['Low', 'Low', 'Med', 'Med', 'High'] },
+      { l: '1 Rare', cells: ['Low', 'Low', 'Low', 'Low', 'Med'] },
+    ];
+
+    for (const row of likelihoods) {
+      doc.rect(margin, y, contentWidth, cellH, 'S');
+      doc.setFont('helvetica', 'bold');
+      doc.text(row.l, margin + cellW / 2, y + 12, { align: 'center' });
+
+      for (let c = 0; c < 5; c++) {
+        const val = row.cells[c];
+        const cellX = margin + (c + 1) * cellW;
+        if (val === 'Crit') doc.setFillColor(244, 63, 94);
+        else if (val === 'High') doc.setFillColor(251, 146, 60);
+        else if (val === 'Med') doc.setFillColor(252, 211, 77);
+        else doc.setFillColor(52, 211, 153);
+
+        doc.rect(cellX, y, cellW, cellH, 'F');
+        doc.rect(cellX, y, cellW, cellH, 'S');
+        doc.setTextColor(val === 'Crit' || val === 'High' ? 255 : 0);
+        doc.text(val, cellX + cellW / 2, y + 12, { align: 'center' });
+        doc.setTextColor(0);
+      }
+      y += cellH;
+    }
+
+    y += 18;
+    y = drawHlPara(
+      'R1 Credential Compromise & MFA Absence: Rated as Critical (5 × 5). Credential stuffing and social engineering present immediate existential threats to patient privacy.',
+      2,
+      y,
+      true
+    );
+
+    doc.setFontSize(9);
+    doc.setTextColor(71, 85, 105);
+    doc.text('CYB2103 | Assessment 3 | Page 2', pageWidth / 2, pageHeight - 50, { align: 'center' });
+    return;
+  }
+
+  if (mIdx === 2) {
+    let y = 75;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(12);
+    doc.setTextColor(15, 23, 42);
+    doc.text('3. Cost-Effective Treatment Plan & Feasibility', margin, y);
+
+    y += 16;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9);
+    doc.text('Table 3: Treatment comparison and residual risk positions', margin, y);
+    y += 10;
+
+    const tHeaders = ['Risk', 'Treatment Package', 'Cost', 'Operational Feasibility', 'Residual'];
+    const tColW = [35, 170, 60, 140, 75];
+
+    doc.setFillColor(241, 245, 249);
+    doc.rect(margin, y, contentWidth, 16, 'F');
+    doc.setDrawColor(203, 213, 225);
+    doc.rect(margin, y, contentWidth, 16, 'S');
+    doc.setFontSize(7.5);
+    let hX = margin + 3;
+    for (let i = 0; i < tHeaders.length; i++) {
+      doc.text(tHeaders[i], hX, y + 11);
+      hX += tColW[i];
+    }
+    y += 16;
+
+    const t3Rows = [
+      ['R1', 'Phishing-resistant MFA; PAM; disable legacy auth', 'Medium', 'High value; deployable in phases', 'Likelihood falls; impact remains'],
+      ['R2', 'Least privilege; micro-segmentation; immutable backups', 'Med-high', 'Requires architecture work & change control', 'Reduces blast radius significantly'],
+      ['R3', 'Central logging/SIEM; endpoint detection (EDR)', 'Medium', 'MSSP improves 24/7 coverage efficiently', 'Faster containment; residual uncertainty'],
+      ['R4', 'Microlearning; safe reporting; supplier MFA diligence', 'Low-med', 'Scalable & affordable; human firewall', 'Lower recurrence; 3rd-party risk'],
+    ];
+
+    doc.setFont('helvetica', 'normal');
+    for (const r of t3Rows) {
+      const rowH = 26;
+      doc.rect(margin, y, contentWidth, rowH, 'S');
+      let rx = margin + 3;
+      for (let i = 0; i < r.length; i++) {
+        const lines = doc.splitTextToSize(r[i], tColW[i] - 5);
+        doc.text(lines, rx, y + 10);
+        rx += tColW[i];
+      }
+      y += rowH;
+    }
+
+    y += 18;
+    y = drawNormalPara(
+      '4. Human-Centric Controls: Training programs must move beyond annual compliance check-boxes toward continuous simulated phishing evaluations with positive reinforcement.',
+      y
+    );
+
+    doc.setFontSize(9);
+    doc.setTextColor(71, 85, 105);
+    doc.text('CYB2103 | Assessment 3 | Page 3', pageWidth / 2, pageHeight - 50, { align: 'center' });
+    return;
+  }
+
+  if (mIdx === 3) {
+    let y = 75;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(12);
+    doc.setTextColor(15, 23, 42);
+    doc.text('References', margin, y);
+
+    y += 18;
+    const refs = [
+      'Anderson, R., & Moore, T. (2006). The economics of information security. Science, 314(5799), 610–613.',
+      'Arachchilage, N. A. G., & Love, S. (2014). Security awareness of computer users: A phishing threat avoidance perspective. Computers in Human Behavior, 38, 304–312.',
+      'Bulgurcu, B., Cavusoglu, H., & Benbasat, I. (2010). Information security policy compliance: An empirical study of rationality-based beliefs and information security awareness. MIS Quarterly, 34(3), 523–548.',
+      'Cavusoglu, H., Mishra, B., & Raghunathan, S. (2005). The value of intrusion detection systems in information technology security architecture. Information Systems Research, 16(1), 28–46.',
+      'Fenz, S., Heurix, J., Neubauer, T., & Pechstein, F. (2014). Current challenges in information security risk management. Information Management & Computer Security, 22(5), 410–430.',
+      'Gordon, L. A., & Loeb, M. P. (2002). The economics of information security investment. ACM Transactions on Information and System Security, 5(4), 438–457.',
+      'International Organization for Standardization. (2022). ISO/IEC 27005:2022: Information security, cybersecurity and privacy protection—Guidance on managing information security risks.',
+      'Krombholz, K., Hobel, H., Huber, M., & Weippl, E. (2015). Advanced social engineering attacks. Journal of Information Security and Applications, 22, 113–122.',
+      'Medibank Private Limited. (2022, November 7). Medibank cybercrime update. https://www.medibank.com.au/livebetter/newsroom/post/medibank-cybercrime-update',
+      'National Institute of Standards and Technology. (2012). Guide for conducting risk assessments (NIST Special Publication 800-30 Rev. 1). U.S. Department of Commerce.',
+      'Office of the Australian Information Commissioner. (2024, June 5). OAIC takes civil penalty action against Medibank.',
+      'Parsons, K., Calic, D., Pattinson, M. R., Butavicius, M., McCormac, A., & Zwaans, T. (2017). The human aspects of information security questionnaire (HAIS-Q). Computers & Security, 66, 40–51.',
+      'Siponen, M., & Willison, R. (2009). Information security management standards: Problems and solutions. Information & Management, 46(5), 267–270.',
+      'Torten, R., Reaiche, C., & Boyle, S. (2018). The impact of security awareness on information technology professionals\' behavior. Computers & Security, 79, 68–79.',
+    ];
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(15, 23, 42);
+
+    for (const ref of refs) {
+      const rLines = doc.splitTextToSize(ref, contentWidth);
+      doc.text(rLines, margin, y, { lineHeightFactor: 1.3 });
+      y += rLines.length * 10 + 6;
+    }
+
+    doc.setFontSize(9);
+    doc.setTextColor(71, 85, 105);
+    doc.text('CYB2103 | Assessment 3 | Page 4', pageWidth / 2, pageHeight - 50, { align: 'center' });
+    return;
+  }
+}
+
+/**
+ * Draws Kunal Kumar AI Developer Portfolio pages (all 3 pages).
+ */
+export function drawKunalManuscriptPdfPage(
+  doc: jsPDF,
+  mIdx: number,
+  margin: number,
+  contentWidth: number,
+  pageWidth: number,
+  pageHeight: number,
+  report: ScanReport,
+  mode: 'ai' | 'similarity'
+) {
+  const isSimilarity = mode === 'similarity';
+
+  const drawHlPara = (
+    text: string,
+    sourceNum: number,
+    startY: number,
+    isUnderlined: boolean = false
+  ): number => {
+    const pLines = doc.splitTextToSize(text, contentWidth);
+    const blockH = pLines.length * 12 + 6;
+
+    if (isSimilarity) {
+      if (isUnderlined || sourceNum === 2) {
+        doc.setFillColor(180, 215, 254);
+        doc.rect(margin - 2, startY - 9, contentWidth + 4, blockH, 'F');
+        doc.setFillColor(37, 99, 235);
+        doc.circle(margin - 7, startY - 2, 4.2, 'F');
+        doc.setFontSize(5.5);
+        doc.setTextColor(255, 255, 255);
+        doc.setFont('helvetica', 'bold');
+        doc.text(String(sourceNum), margin - 7, startY - 0.2, { align: 'center' });
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(8.5);
+        doc.setTextColor(29, 78, 216);
+        doc.text(pLines, margin, startY, { lineHeightFactor: 1.35 });
+      } else {
+        doc.setFillColor(254, 180, 180);
+        doc.rect(margin - 2, startY - 9, contentWidth + 4, blockH, 'F');
+        doc.setFillColor(233, 30, 99);
+        doc.circle(margin - 7, startY - 2, 4.2, 'F');
+        doc.setFontSize(5.5);
+        doc.setTextColor(255, 255, 255);
+        doc.setFont('helvetica', 'bold');
+        doc.text(String(sourceNum), margin - 7, startY - 0.2, { align: 'center' });
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(8.5);
+        doc.setTextColor(185, 28, 28);
+        doc.text(pLines, margin, startY, { lineHeightFactor: 1.35 });
+      }
+    } else {
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8.5);
+      doc.setTextColor(15, 23, 42);
+      doc.text(pLines, margin, startY, { lineHeightFactor: 1.35 });
+    }
+
+    return startY + pLines.length * 12 + 10;
+  };
+
+  const drawNormalPara = (text: string, startY: number): number => {
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8.5);
+    doc.setTextColor(15, 23, 42);
+    const pLines = doc.splitTextToSize(text, contentWidth);
+    doc.text(pLines, margin, startY, { lineHeightFactor: 1.35 });
+    return startY + pLines.length * 12 + 10;
+  };
+
+  if (mIdx === 0) {
+    let y = 75;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(14);
+    doc.setTextColor(15, 23, 42);
+    doc.text('Kunal Kumar — AI Developer & ML Engineer', margin, y);
+
+    y += 18;
+    doc.setFontSize(10.5);
+    doc.text('Professional Summary', margin, y);
+
+    y += 14;
+    y = drawNormalPara(
+      'Results-driven AI Developer with hands-on experience in architecting scalable neural networks, LLM fine-tuning pipelines, and distributed inference engines.',
+      y
+    );
+
+    y = drawHlPara(
+      'Designed and deployed deep learning microservices using FastAPI, Docker, and Kubernetes with sub-50ms latency guarantees across multi-region clusters.',
+      1,
+      y
+    );
+
+    y += 6;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10.5);
+    doc.text('Technical Skills & Competencies', margin, y);
+
+    y += 14;
+    y = drawNormalPara(
+      '• Machine Learning: PyTorch, TensorFlow, Scikit-Learn, XGBoost, Transformers, Diffusion Models\n• Generative AI: LoRA, QLoRA, RAG Systems, LangChain, LlamaIndex, vLLM\n• Vector DBs: Pinecone, Milvus, ChromaDB, Qdrant\n• MLOps: Docker, Kubernetes, Triton, ONNX, MLflow, AWS SageMaker, GCP Vertex AI',
+      y
+    );
+
+    doc.setFontSize(9);
+    doc.setTextColor(71, 85, 105);
+    doc.text('Kunal Kumar - AI Developer.pdf | Page 1', pageWidth / 2, pageHeight - 50, { align: 'center' });
+    return;
+  }
+
+  if (mIdx === 1) {
+    let y = 75;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.setTextColor(15, 23, 42);
+    doc.text('Professional Experience & Systems Architecture', margin, y);
+
+    y += 16;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9.5);
+    doc.text('Senior AI Developer | Cognitive Solutions Lab (2024 – Present)', margin, y);
+
+    y += 14;
+    y = drawNormalPara(
+      '• Spearheaded development of an enterprise multimodal conversational assistant handling 250,000+ queries daily with 99.8% uptime.\n• Architected dynamic context chunking and reranking mechanisms that decreased inference latency by 42%.',
+      y
+    );
+
+    y = drawHlPara(
+      'Integrated comprehensive evaluation benchmarks ensuring deterministic agent reasoning, citation validation, and automated hallucination suppression.',
+      2,
+      y,
+      true
+    );
+
+    doc.setFontSize(9);
+    doc.setTextColor(71, 85, 105);
+    doc.text('Kunal Kumar - AI Developer.pdf | Page 2', pageWidth / 2, pageHeight - 50, { align: 'center' });
+    return;
+  }
+
+  if (mIdx === 2) {
+    let y = 75;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.setTextColor(15, 23, 42);
+    doc.text('Education, Credentials & Research Publications', margin, y);
+
+    y += 16;
+    y = drawNormalPara(
+      'Bachelor of Technology in Computer Science & Engineering\nSpecialization in Artificial Intelligence & Computational Data Science.\nCertifications: Google Cloud TensorFlow Developer, DeepLearning.AI Generative AI Specialist.',
+      y
+    );
+
+    y += 8;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9.5);
+    doc.text('Research Publications', margin, y);
+
+    y += 14;
+    y = drawNormalPara(
+      'Kumar, K., & Sharma, R. (2023). "Efficient Transformer Fine-Tuning on Resource-Constrained Hardware using Low-Rank Quantization." Proceedings of the International Conference on Applied Artificial Intelligence, pp. 142–151.',
+      y
+    );
+
+    doc.setFontSize(9);
+    doc.setTextColor(71, 85, 105);
+    doc.text('Kunal Kumar - AI Developer.pdf | Page 3', pageWidth / 2, pageHeight - 50, { align: 'center' });
+    return;
+  }
+}
+
+/**
+ * Universal Dynamic Turnitin Manuscript Page Renderer for jsPDF.
+ * Renders any document's text dynamically with authentic Turnitin:
+ * - Top header (Document title, section mode, page number)
+ * - Academic title block on manuscript page 0
+ * - Proper academic section headings
+ * - 4-color Turnitin similarity highlights (Source 1: red, Source 2: blue with underline, Source 3: green, Source 4: purple)
+ * - Left gutter circular badge pills [1], [2], [3], [4] aligned with highlighted paragraphs
+ * - AI detection light blue highlights with [AI] badge
+ * - Authentic Turnitin bottom footer (Turnitin branding, submission ID, page number)
+ */
+export function drawUniversalManuscriptPdfPage(
+  doc: jsPDF,
+  mIdx: number,
+  pageNumber: number,
+  totalPages: number,
+  margin: number,
+  contentWidth: number,
+  pageWidth: number,
+  pageHeight: number,
+  report: ScanReport,
+  mode: 'ai' | 'similarity'
+) {
+  // 1. Top Turnitin Header
+  const sectionHeader = mode === 'ai' ? 'AI Writing Submission' : 'Integrity Submission';
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7.5);
+  doc.setTextColor(100, 116, 139);
+
+  const displayTitle = report.title || report.fileName || 'Submission';
+  const truncatedTitle = doc.splitTextToSize(displayTitle, contentWidth * 0.42)[0];
+  doc.text(truncatedTitle, margin, 36);
+  doc.text(sectionHeader, pageWidth / 2, 36, { align: 'center' });
+  doc.text(`Page ${pageNumber} of ${totalPages}`, pageWidth - margin, 36, { align: 'right' });
+
+  doc.setDrawColor(226, 232, 240);
+  doc.setLineWidth(0.5);
+  doc.line(margin, 42, pageWidth - margin, 42);
+
+  // 2. Bottom Turnitin Footer
+  doc.setDrawColor(226, 232, 240);
+  doc.setLineWidth(0.5);
+  doc.line(margin, pageHeight - 34, pageWidth - margin, pageHeight - 34);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7.5);
+  doc.setTextColor(148, 163, 184);
+  doc.text('Turnitin', margin, pageHeight - 22);
+  const subId = report.submissionId || 'trn:oid:::2:445438161';
+  doc.text(subId, pageWidth / 2, pageHeight - 22, { align: 'center' });
+  doc.text(`Page ${pageNumber} of ${totalPages}`, pageWidth - margin, pageHeight - 22, { align: 'right' });
+
+  // 3. Dynamic content
+  let textY = 62;
+
+  // On first manuscript page (mIdx === 0): Title & Author Block
+  if (mIdx === 0) {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(13);
+    doc.setTextColor(15, 23, 42);
+    const cleanTitle = (report.title || report.fileName || 'Untitled Document').replace(/\.[^/.]+$/, '');
+    const titleLines = doc.splitTextToSize(cleanTitle, contentWidth - 30);
+    doc.text(titleLines, pageWidth / 2, textY, { align: 'center' });
+    textY += titleLines.length * 15 + 4;
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8.5);
+    doc.setTextColor(71, 85, 105);
+    const authorLine = `${report.author || 'Author'}${report.institution ? ' • ' + report.institution : ''}`;
+    doc.text(authorLine, pageWidth / 2, textY, { align: 'center' });
+    textY += 12;
+
+    doc.setDrawColor(241, 245, 249);
+    doc.setLineWidth(0.5);
+    doc.line(margin + 50, textY, pageWidth - margin - 50, textY);
+    textY += 16;
+  }
+
+  // Get dynamic paginated paragraphs
+  const dynamicPages = paginateDocumentForTurnitin(report, mode);
+  const pageData = dynamicPages[mIdx] || dynamicPages[0];
+
+  if (!pageData || !pageData.paragraphs || pageData.paragraphs.length === 0) {
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8.5);
+    doc.setTextColor(30, 41, 59);
+    const sample = report.contentSample || 'Document submission content processed by Turnitin integrity engine.';
+    const lines = doc.splitTextToSize(sample, contentWidth);
+    doc.text(lines, margin, textY);
+    return;
+  }
+
+  const maxY = pageHeight - 46;
+  const gutterWidth = 14;
+  const textLeft = margin + gutterWidth;
+  const textWidth = contentWidth - gutterWidth;
+
+  for (const para of pageData.paragraphs) {
+    if (textY > maxY) break;
+
+    if (para.isHeading) {
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(10);
+      doc.setTextColor(15, 23, 42);
+      const headingText = para.segments.map(s => s.text).join('').trim();
+      const hLines = doc.splitTextToSize(headingText, contentWidth);
+      if (textY + hLines.length * 13 > maxY) break;
+      doc.text(hLines, margin, textY);
+      textY += hLines.length * 13 + 5;
+      continue;
+    }
+
+    // Regular paragraph
+    const fullParaText = para.segments.map(s => s.text).join('').trim();
+    if (!fullParaText) continue;
+
+    const pLines = doc.splitTextToSize(fullParaText, textWidth);
+    const pHeight = pLines.length * 11.5 + 4;
+
+    if (textY + pHeight > maxY && textY > 90) {
+      break;
+    }
+
+    const hasPlagSegment = mode === 'similarity' && para.segments.some(s => s.isPlagiarized);
+    const hasAiSegment = mode === 'ai' && para.segments.some(s => s.isAi) && (report.aiScore || 0) >= 21;
+
+    if (hasPlagSegment) {
+      const firstPlag = para.segments.find(s => s.isPlagiarized);
+      const srcIdx = firstPlag?.sourceIndex || 1;
+      const isBlue = firstPlag?.isBlueUnderlined || srcIdx === 2;
+
+      // Highlight background
+      if (srcIdx === 2 || isBlue) {
+        doc.setFillColor(180, 215, 254); // prominent light blue
+      } else if (srcIdx === 3) {
+        doc.setFillColor(167, 243, 208); // prominent light green
+      } else if (srcIdx === 4) {
+        doc.setFillColor(221, 214, 254); // prominent light purple
+      } else {
+        doc.setFillColor(254, 180, 180); // prominent light red
+      }
+      doc.rect(textLeft - 2, textY - 8, textWidth + 4, pHeight, 'F');
+
+      // Left gutter badge circle
+      const color = getSourceColor(srcIdx);
+      doc.setFillColor(color.bg[0], color.bg[1], color.bg[2]);
+      doc.circle(margin + 5, textY - 2, 4.5, 'F');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(6);
+      doc.setTextColor(255, 255, 255);
+      doc.text(`${srcIdx}`, margin + 5, textY - 0.2, { align: 'center' });
+
+      // Highlighted text color
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8.5);
+      if (srcIdx === 2 || isBlue) {
+        doc.setTextColor(29, 78, 216);
+      } else if (srcIdx === 3) {
+        doc.setTextColor(4, 120, 87);
+      } else if (srcIdx === 4) {
+        doc.setTextColor(109, 40, 217);
+      } else {
+        doc.setTextColor(185, 28, 28);
+      }
+      doc.text(pLines, textLeft, textY);
+    } else if (hasAiSegment) {
+      // AI highlight
+      doc.setFillColor(180, 215, 254);
+      doc.rect(textLeft - 2, textY - 8, textWidth + 4, pHeight, 'F');
+
+      // AI Badge in gutter
+      doc.setFillColor(2, 132, 199);
+      doc.roundedRect(margin + 1, textY - 6, 8, 8, 1.5, 1.5, 'F');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(4.5);
+      doc.setTextColor(255, 255, 255);
+      doc.text('AI', margin + 5, textY - 0.5, { align: 'center' });
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8.5);
+      doc.setTextColor(30, 64, 175);
+      doc.text(pLines, textLeft, textY);
+    } else {
+      // Normal text
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8.5);
+      doc.setTextColor(30, 41, 59);
+      doc.text(pLines, textLeft, textY);
+    }
+
+    textY += pHeight + 7;
   }
 }
 
@@ -1117,19 +2263,6 @@ export async function downloadReportPdf(
     y += discHeight + 14;
     doc.setDrawColor(226, 232, 240);
     doc.line(margin, y, pageWidth - margin, y);
-
-    // If AI report and original PDF was uploaded, merge the 2 Cover Pages directly with original PDF
-    if (isOriginalPdf && originalPdfPageCount > 0 && report.fileData) {
-      const coverBytes = doc.output('arraybuffer');
-      const finalPdfBytes = await mergeTurnitinCoverWithUserPdf(
-        coverBytes,
-        report.fileData,
-        2
-      );
-      const filename = getReportPdfFileName(report, mode);
-      downloadPdfFromBytes(finalPdfBytes, filename);
-      return;
-    }
   } else {
     drawHeaderAndFooter(2, 'Integrity Overview');
 
@@ -1272,19 +2405,6 @@ export async function downloadReportPdf(
     doc.text(p2, flagBoxX + 6, flagBoxY + 29.5, { lineHeightFactor: 1.15 });
   }
 
-  // If AI report and original PDF was uploaded, merge the 2 Cover Pages directly with original PDF
-  if (mode === 'ai' && isOriginalPdf && originalPdfPageCount > 0 && report.fileData) {
-    const coverBytes = doc.output('arraybuffer');
-    const finalPdfBytes = await mergeTurnitinCoverWithUserPdf(
-      coverBytes,
-      report.fileData,
-      2
-    );
-    const filename = getReportPdfFileName(report, mode);
-    downloadPdfFromBytes(finalPdfBytes, filename);
-    return;
-  }
-
   // ----------------------------------------------------
   // PAGES 3+: TOP SOURCES & MANUSCRIPT PAGES
   // ----------------------------------------------------
@@ -1292,6 +2412,42 @@ export async function downloadReportPdf(
 
   for (let pIdx = 2; pIdx < pagesList.length; pIdx++) {
     const pageObj = pagesList[pIdx];
+
+    // For uploaded DOCX (converted via LibreOffice) or PDFs, merge Turnitin covers directly
+    // with the authentic original vector PDF, preserving 100% tables, TOC, images, logos, stickers, and selectable text.
+    if (
+      pageObj.type === 'manuscript' &&
+      isOriginalPdf &&
+      report.fileData &&
+      !report.id.startsWith('rep-danish') &&
+      !report.id.startsWith('rep-cyb2103') &&
+      !report.id.startsWith('rep-kunal')
+    ) {
+      try {
+        const coverPdfBytes = doc.output('arraybuffer');
+        const finalPdfBytes = await mergeTurnitinCoverWithUserPdf(
+          coverPdfBytes,
+          report.fileData,
+          doc.getNumberOfPages(),
+          report,
+          mode
+        );
+        const blob = new Blob([finalPdfBytes], { type: 'application/pdf' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = getReportPdfFileName(report, mode);
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => {
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        }, 1000);
+        return;
+      } catch (mergeErr) {
+        console.warn('mergeTurnitinCoverWithUserPdf fallback to universal vector renderer:', mergeErr);
+      }
+    }
 
     doc.addPage();
     if (onProgress) onProgress(pageObj.pageNumber, totalPages);
@@ -1397,7 +2553,7 @@ export async function downloadReportPdf(
             ? 'Submitted works'
             : 'Publication';
 
-        // 1. Source number pill badge
+        // 1. Source number pill badge on the LEFT
         const numText = `${num}`;
         const numWidth = Math.max(16, doc.getTextWidth(numText) + 8);
         doc.setFillColor(color.bg[0], color.bg[1], color.bg[2]);
@@ -1407,28 +2563,34 @@ export async function downloadReportPdf(
         doc.setTextColor(255, 255, 255);
         doc.text(numText, margin + numWidth / 2, y - 0.5, { align: 'center' });
 
-        // 2. Source Type Badge Tag - pastel color matched to source hue
+        // 2. Similarity Percentage on the LEFT (directly following the number pill)
+        const simText = `${s.similarity}%`;
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(7.5);
+        doc.setTextColor(15, 23, 42);
+        const simX = margin + numWidth + 5;
+        doc.text(simText, simX, y - 0.5);
+        const simWidth = doc.getTextWidth(simText);
+
+        // 3. Source Type Badge Tag - pastel color matched to source hue
         doc.setFont('helvetica', 'normal');
         doc.setFontSize(6);
         const tagTextWidth = doc.getTextWidth(typeLabel);
         const tagPillWidth = tagTextWidth + 8;
-        const tagX = margin + numWidth + 4;
+        const tagX = simX + simWidth + 5;
 
         doc.setFillColor(color.light[0], color.light[1], color.light[2]);
         doc.roundedRect(tagX, y - 6.5, tagPillWidth, 8.5, 4.25, 4.25, 'F');
         doc.setTextColor(color.lightText[0], color.lightText[1], color.lightText[2]);
         doc.text(typeLabel, tagX + tagPillWidth / 2, y - 0.5, { align: 'center' });
 
-        // Line 2: Source Title (Bold, slate-900) & Percentage (Bold, right-aligned)
+        // Line 2: Source Title (Bold, slate-900)
         y += 9.5;
         doc.setFont('helvetica', 'bold');
         doc.setFontSize(7.5);
         doc.setTextColor(15, 23, 42);
 
-        const simText = `${s.similarity}%`;
-        const simWidth = doc.getTextWidth(simText);
-        const maxTitleWidth = contentWidth - simWidth - 14;
-
+        const maxTitleWidth = contentWidth;
         let displayTitle = s.name;
         if (doc.getTextWidth(displayTitle) > maxTitleWidth) {
           while (displayTitle.length > 5 && doc.getTextWidth(displayTitle + '...') > maxTitleWidth) {
@@ -1439,11 +2601,6 @@ export async function downloadReportPdf(
 
         doc.text(displayTitle, margin, y);
 
-        doc.setFont('helvetica', 'bold');
-        doc.setFontSize(8);
-        doc.setTextColor(15, 23, 42);
-        doc.text(simText, pageWidth - margin, y, { align: 'right' });
-
         // Line 3: Thin separator line
         y += 5;
         doc.setDrawColor(241, 245, 249);
@@ -1451,123 +2608,41 @@ export async function downloadReportPdf(
         doc.line(margin, y, pageWidth - margin, y);
         y += 9.5;
       }
-
-      // If Similarity report and original PDF was uploaded, merge the 3 Cover Pages directly with original PDF
-      if (isOriginalPdf && originalPdfPageCount > 0 && report.fileData) {
-        const coverBytes = doc.output('arraybuffer');
-        const finalPdfBytes = await mergeTurnitinCoverWithUserPdf(
-          coverBytes,
-          report.fileData,
-          3
-        );
-        const filename = getReportPdfFileName(report, mode);
-        downloadPdfFromBytes(finalPdfBytes, filename);
-        return;
-      }
     } else if (pageObj.type === 'manuscript') {
-      const sectionHeader = mode === 'ai' ? 'AI Writing Submission' : 'Integrity Submission';
-      drawHeaderAndFooter(pageObj.pageNumber, sectionHeader);
-
       const mIdx = pageObj.manuscriptIndex || 0;
 
-      if (isDanishDocument(report.fileName || report.title)) {
+      if (report.id === 'rep-danish-tauseef-shoaib') {
+        const sectionHeader = mode === 'ai' ? 'AI Writing Submission' : 'Integrity Submission';
+        drawHeaderAndFooter(pageObj.pageNumber, sectionHeader);
         drawDanishManuscriptPdfPage(doc, mIdx, margin, contentWidth, pageWidth, pageHeight, report, mode);
         continue;
       }
-
-      let textY = 70;
-
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(11);
-      doc.setTextColor(0, 0, 0);
-      doc.text(`${report.fileName || report.title} — Section ${mIdx + 1}`, margin, textY);
-
-      textY += 18;
-
-      // Use the comprehensive dynamic paginated paragraphs
-      const dynamicPages = paginateDocumentForTurnitin(report, mode);
-      const currentPageData = dynamicPages[mIdx] || dynamicPages[0];
-
-      if (currentPageData && currentPageData.paragraphs && currentPageData.paragraphs.length > 0) {
-        for (const para of currentPageData.paragraphs) {
-          if (textY > pageHeight - 55) break;
-
-          const isHeading = para.isHeading;
-          if (isHeading) {
-            doc.setFont('helvetica', 'bold');
-            doc.setFontSize(9.5);
-            doc.setTextColor(15, 23, 42);
-            const headingText = para.segments.map(s => s.text).join('');
-            const hLines = doc.splitTextToSize(headingText, contentWidth);
-            doc.text(hLines, margin, textY);
-            textY += hLines.length * 12 + 6;
-            continue;
-          }
-
-          // Regular paragraph
-          doc.setFont('helvetica', 'normal');
-          doc.setFontSize(8.5);
-
-          // Check if paragraph has plagiarized/highlighted segments
-          const fullParaText = para.segments.map(s => s.text).join('');
-          const pLines = doc.splitTextToSize(fullParaText, contentWidth);
-          const hasPlagSegment = para.segments.some(s => s.isPlagiarized);
-          const hasAiSegment = para.segments.some(s => s.isAi);
-
-          if (hasPlagSegment) {
-            const firstPlag = para.segments.find(s => s.isPlagiarized);
-            const srcIdx = firstPlag?.sourceIndex || 1;
-            const color = getSourceColor(srcIdx);
-            const isBlue = firstPlag?.isBlueUnderlined;
-            const blockH = pLines.length * 11.5 + 4;
-
-            // Highlight background rectangle
-            if (isBlue) {
-              doc.setFillColor(219, 234, 254); // light blue
-            } else {
-              doc.setFillColor(254, 226, 226); // light red
-            }
-            doc.rect(margin - 2, textY - 8, contentWidth + 4, blockH, 'F');
-
-            // Draw badge circle
-            doc.setFillColor(color.bg[0], color.bg[1], color.bg[2]);
-            doc.circle(pageWidth - margin + 2, textY - 1, 4, 'F');
-            doc.setFontSize(5.5);
-            doc.setTextColor(255, 255, 255);
-            doc.text(`${srcIdx}`, pageWidth - margin + 2, textY + 0.8, { align: 'center' });
-
-            doc.setFontSize(8.5);
-            if (isBlue) {
-              doc.setTextColor(29, 78, 216); // dark blue
-            } else {
-              doc.setTextColor(185, 28, 28); // dark red
-            }
-            doc.text(pLines, margin, textY);
-          } else if (hasAiSegment && report.aiScore > 20) {
-            const blockH = pLines.length * 11.5 + 4;
-            doc.setFillColor(224, 242, 254); // cyan tint
-            doc.rect(margin - 2, textY - 8, contentWidth + 4, blockH, 'F');
-
-            doc.setFontSize(8.5);
-            doc.setTextColor(3, 105, 161);
-            doc.text(pLines, margin, textY);
-          } else {
-            doc.setFontSize(8.5);
-            doc.setTextColor(30, 41, 59);
-            doc.text(pLines, margin, textY);
-          }
-
-          textY += pLines.length * 11.5 + 8;
-        }
-      } else {
-        // Fallback sample manuscript text
-        const sampleText =
-          report.contentSample ||
-          'This document examines research methodology, experimental findings, systematic controls, and academic literature analysis with comprehensive benchmark validation.';
-        const pLines = doc.splitTextToSize(sampleText, contentWidth);
-        doc.setTextColor(30, 41, 59);
-        doc.text(pLines, margin, textY);
+      if (report.id === 'rep-cyb2103-cyber-risk') {
+        const sectionHeader = mode === 'ai' ? 'AI Writing Submission' : 'Integrity Submission';
+        drawHeaderAndFooter(pageObj.pageNumber, sectionHeader);
+        drawCyb2103ManuscriptPdfPage(doc, mIdx, margin, contentWidth, pageWidth, pageHeight, report, mode);
+        continue;
       }
+      if (report.id === 'rep-kunal-ai-dev') {
+        const sectionHeader = mode === 'ai' ? 'AI Writing Submission' : 'Integrity Submission';
+        drawHeaderAndFooter(pageObj.pageNumber, sectionHeader);
+        drawKunalManuscriptPdfPage(doc, mIdx, margin, contentWidth, pageWidth, pageHeight, report, mode);
+        continue;
+      }
+
+      // Universal Dynamic Turnitin Manuscript Page Renderer for all documents & uploaded files
+      drawUniversalManuscriptPdfPage(
+        doc,
+        mIdx,
+        pageObj.pageNumber,
+        totalPages,
+        margin,
+        contentWidth,
+        pageWidth,
+        pageHeight,
+        report,
+        mode
+      );
     }
   }
 

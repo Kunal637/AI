@@ -386,7 +386,7 @@ export const ReportModal: React.FC<ReportModalProps> = ({ report, onClose }) => 
                             setSelectedSourceId(snip.sourceId || 's1');
                             setSidebarTab('matches');
                           }}
-                          className={`${color.bg} ${color.text} ${color.hoverBg} px-1.5 py-0.5 rounded border-b-2 ${color.border} font-medium cursor-pointer transition-all inline ${
+                          className={`${color.bg} ${color.text} ${color.hoverBg} px-1.5 py-0.5 rounded font-medium cursor-pointer transition-all inline ${
                             isSelected ? 'ring-2 ring-indigo-600 font-semibold' : ''
                           }`}
                           title={`Click to inspect source: ${snip.sourceName || 'Academic Archive'} (${snip.similarityPercentage || 6}%)`}
@@ -405,7 +405,7 @@ export const ReportModal: React.FC<ReportModalProps> = ({ report, onClose }) => 
                         <span
                           key={idx}
                           onClick={() => setSidebarTab('ai')}
-                          className="bg-purple-100/90 text-purple-950 hover:bg-purple-200/90 px-1.5 py-0.5 rounded border-b-2 border-purple-500 font-medium cursor-pointer transition-all inline"
+                          className="bg-purple-100/90 text-purple-950 hover:bg-purple-200/90 px-1.5 py-0.5 rounded font-medium cursor-pointer transition-all inline"
                           title={`Turnitin AI Writing Detector: ${snip.aiProbability || report.aiScore}% probability`}
                         >
                           <sup className="inline-block px-1 py-0.2 mr-1 rounded text-[9px] font-mono font-bold bg-purple-600 text-white">

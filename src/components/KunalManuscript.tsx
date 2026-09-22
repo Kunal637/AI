@@ -40,29 +40,29 @@ export const KunalManuscriptPage: React.FC<KunalManuscriptProps> = ({
   const mark = (text: string, srcNum: number, isBlue: boolean = false) => {
     if (!isSimilarity) return <span>{text}</span>;
 
-    if (isBlue) {
+    if (isBlue || srcNum === 2) {
       return (
         <span
-          style={{ backgroundColor: '#dbeafe', color: '#1d4ed8' }}
-          className="underline decoration-[#2563eb] decoration-1 underline-offset-2 rounded-xs px-1 py-0.5 inline font-normal"
+          style={{ backgroundColor: '#93c5fd', color: '#1e3a8a' }}
+          className="rounded-xs px-1 py-0.5 inline font-normal"
         >
-          {text}
-          <span className="inline-flex items-center justify-center w-3 h-3 rounded-full text-[7.5px] font-bold font-mono bg-[#2563eb] text-white ml-0.5 align-baseline">
+          <span className="inline-flex items-center justify-center w-3 h-3 rounded-full text-[7.5px] font-bold font-mono bg-[#2563eb] text-white mr-1 align-baseline">
             {srcNum}
           </span>
+          {text}
         </span>
       );
     }
 
     return (
       <span
-        style={{ backgroundColor: '#fee2e2', color: '#b91c1c' }}
+        style={{ backgroundColor: '#fca5a5', color: '#991b1b' }}
         className="rounded-xs px-1 py-0.5 inline font-normal"
       >
-        {text}
-        <span className="inline-flex items-center justify-center w-3 h-3 rounded-full text-[7.5px] font-bold font-mono bg-[#dc2626] text-white ml-0.5 align-baseline">
+        <span className="inline-flex items-center justify-center w-3 h-3 rounded-full text-[7.5px] font-bold font-mono bg-[#dc2626] text-white mr-1 align-baseline">
           {srcNum}
         </span>
+        {text}
       </span>
     );
   };

@@ -225,11 +225,11 @@ export const Cyb2103ManuscriptPage: React.FC<Cyb2103ManuscriptProps> = ({
   // Highlighting helpers matching Turnitin official styles
   const hlSim = (text: string, sourceNum: number = 1, isBlue: boolean = false) => {
     if (!isSimilarity) return <span>{text}</span>;
-    if (isBlue) {
+    if (isBlue || sourceNum === 2) {
       return (
         <span
-          style={{ backgroundColor: '#dbeafe', color: '#1d4ed8' }}
-          className="underline decoration-[#2563eb] decoration-1 underline-offset-2 rounded-xs px-1 py-0.5 inline font-normal"
+          style={{ backgroundColor: '#93c5fd', color: '#1e3a8a' }}
+          className="rounded-xs px-1 py-0.5 inline font-normal"
         >
           {text}
         </span>
@@ -237,7 +237,7 @@ export const Cyb2103ManuscriptPage: React.FC<Cyb2103ManuscriptProps> = ({
     }
     return (
       <span
-        style={{ backgroundColor: '#fee2e2', color: '#b91c1c' }}
+        style={{ backgroundColor: '#fca5a5', color: '#991b1b' }}
         className="rounded-xs px-1 py-0.5 inline font-normal"
       >
         {text}
@@ -249,8 +249,8 @@ export const Cyb2103ManuscriptPage: React.FC<Cyb2103ManuscriptProps> = ({
     if (isSimilarity || report.aiScore <= 20) return <span>{text}</span>;
     return (
       <span
-        style={{ backgroundColor: '#cffafe', color: '#0369a1' }}
-        className="border-b-2 border-[#0284c7] rounded-xs px-1 py-0.5 inline font-normal"
+        style={{ backgroundColor: '#93c5fd', color: '#1e3a8a' }}
+        className="rounded-xs px-1 py-0.5 inline font-normal"
       >
         {text}
       </span>

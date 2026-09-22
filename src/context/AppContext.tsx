@@ -359,8 +359,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (!result.some(r => r.id === DANISH_REPORT.id)) {
         result = [DANISH_REPORT, ...result];
       } else {
-        // Ensure Danish report has full 12 page count and fileData
-        result = result.map(r => (isDanishDocument(r.fileName || r.title) ? { ...DANISH_REPORT, ...r, pageCount: 12, fileData: DANISH_PDF_BASE64, fileMimeType: 'application/pdf' } : r));
+        // Ensure Danish report has full 12 page count and preserve uploaded fileData if present
+        result = result.map(r => (isDanishDocument(r.fileName || r.title) ? { ...DANISH_REPORT, ...r, pageCount: 12, fileData: r.fileData || DANISH_PDF_BASE64, fileMimeType: r.fileMimeType || 'application/pdf' } : r));
       }
       if (!result.some(r => r.id === TURNITIN_FLAGSHIP_REPORT.id)) {
         result = [TURNITIN_FLAGSHIP_REPORT, ...result];
@@ -1561,7 +1561,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const rawWords = sampleText.trim().split(/\s+/).filter(Boolean).length;
     const calculatedWordCount = Math.max(720, rawWords);
     const calculatedCharCount = sampleText.length > 500 ? sampleText.length : calculatedWordCount * 6;
-    const calculatedPageCount = options.pageCount || Math.max(3, Math.min(10, Math.ceil(calculatedWordCount / 320)));
+    const calculatedPageCount = options.pageCount || Math.max(1, Math.ceil(calculatedWordCount / 320));
 
     const sourcesList: MatchedSource[] = generateSourcesForDocument(
       options.fileName,
@@ -1616,6 +1616,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       pageCount: calculatedPageCount,
       fileData: options.fileData,
       fileMimeType: options.fileMimeType,
+      text: sampleText,
       htmlContent: options.htmlContent,
       htmlPages: options.htmlPages,
       matchGroups: {
