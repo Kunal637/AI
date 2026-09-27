@@ -1,12 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { User, ScanReport, ActivationCode, CreditTransaction, ScanMode, HighlightedSnippet, MatchedSource } from '../types';
-import { cleanText, generateCleanAcademicContent, generateSmartSnippets } from '../utils/documentParser';
+import { cleanText, generateSmartSnippets } from '../utils/documentParser';
 import { generateSourcesForDocument } from '../utils/dynamicManuscriptEngine';
-import { TURNITIN_FLAGSHIP_REPORT } from '../data/turnitinFlagshipReport';
-import { CYB2103_REPORT, isCyb2103Document } from '../data/cyb2103Report';
-import { KUNAL_REPORT, isKunalReport } from '../data/kunalReport';
-import { DANISH_REPORT, isDanishDocument } from '../data/danishReport';
-import { DANISH_PDF_BASE64 } from '../data/danishPdfBase64';
 import {
   auth,
   db,
@@ -26,11 +21,16 @@ import {
   FirebaseUser,
 } from '../lib/firebase';
 import { doc, collection, deleteDoc, onSnapshot, query, where } from 'firebase/firestore';
+import { ref, deleteObject } from 'firebase/storage';
+import { storage } from '../lib/firebase';
+import { buildUserFromAuthProfile } from '../lib/userProfiles';
+
+export { buildUserFromAuthProfile };
 
 export const isAdminEmail = (email?: string | null): boolean => {
   if (!email) return false;
   const em = email.trim().toLowerCase();
-  return em === 'admin@turnitscope.com' || em === 'kunalsukhani333@gmail.com';
+  return em === 'admin@turnitscope.com';
 };
 
 interface AppContextType {
@@ -69,6 +69,7 @@ interface AppContextType {
   redeemCode: (codeStr: string) => { success: boolean; message: string; creditsAdded?: number };
   generateCode: (codeStr: string, credits: number, maxUses?: number, note?: string) => ActivationCode;
   deleteCode: (codeId: string) => void;
+  toggleCodeActivation: (codeId: string) => void;
   runScan: (options: {
     fileName: string;
     mode: ScanMode;
@@ -79,6 +80,7 @@ interface AppContextType {
     fileContent?: string;
     institution?: string;
     fileData?: string;
+    storagePath?: string;
     fileMimeType?: string;
     htmlContent?: string;
     htmlPages?: string[];
@@ -106,6 +108,101 @@ const STORAGE_KEY_USERS = 'turnitscope_users_v1';
 const STORAGE_KEY_REPORTS = 'turnitscope_reports_v1';
 const STORAGE_KEY_CODES = 'turnitscope_codes_v1';
 const STORAGE_KEY_TXNS = 'turnitscope_txns_v1';
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
+const getUserScopedStorageKey = (key: string, userId?: string): string => {
+  if (!userId) return key;
+  return `${key}_${userId}`;
+};
+
+const getReportsStorageKey = (userId?: string): string => getUserScopedStorageKey(STORAGE_KEY_REPORTS, userId);
+
+const pruneExpiredReports = (items: ScanReport[] = [], userId?: string): ScanReport[] => {
+  const now = Date.now();
+
+  return items
+    .filter(item => {
+      const effectiveUserId = item.userId || userId;
+      if (userId && effectiveUserId && effectiveUserId !== userId) return false;
+
+      const expiresAt = item.expiresAt ?? (item.timestamp ? item.timestamp + ONE_DAY_MS : undefined);
+      if (!expiresAt) return true;
+      return expiresAt > now;
+    })
+    .map(item => ({
+      ...item,
+      userId: item.userId || userId,
+      expiresAt: item.expiresAt ?? (item.timestamp ? item.timestamp + ONE_DAY_MS : Date.now() + ONE_DAY_MS),
+    }));
+};
+
+const DEMO_REPORT_ID_SET = new Set([
+  'rep-cyb2103-cyber-risk',
+  'rep-kunal-ai-dev',
+  'rep-101',
+  'rep-102',
+]);
+const LEGACY_REPORT_KEYWORDS = [
+  'cyb2103',
+  'cyber risk',
+  'kunal kumar - ai developer',
+  'rep-101',
+  'rep-102',
+];
+
+const isLegacyReport = (report: Partial<ScanReport>): boolean => {
+  if (!report) return false;
+  const idText = String(report.id || '').toLowerCase();
+  const nameText = `${report.title || ''} ${report.fileName || ''}`.toLowerCase();
+  return (
+    DEMO_REPORT_ID_SET.has(report.id || '') ||
+    LEGACY_REPORT_KEYWORDS.some(keyword => idText.includes(keyword) || nameText.includes(keyword))
+  );
+};
+
+const sanitizePersistedReports = (items: ScanReport[] = [], userId?: string): ScanReport[] => {
+  const seen = new Set<string>();
+  return pruneExpiredReports(
+    items
+      .filter(r => !isLegacyReport(r))
+      .map(r => {
+        let sample = cleanText(r.contentSample || '');
+        if (!sample || sample.length < 40 || sample.includes('PK') || sample.includes('docProps')) {
+          sample = '';
+        }
+
+        const cleanedSnippets = (r.snippets || []).map((snip, idx) => {
+          let snipText = cleanText(snip.text);
+          if (!snipText || snipText.includes('PK')) {
+            snipText = '';
+          }
+          return {
+            ...snip,
+            text: snipText,
+            sourceIndex: snip.sourceIndex || (idx % 3) + 1,
+            sourceId: snip.sourceId || `s${(idx % 3) + 1}`,
+          };
+        });
+
+        return {
+          ...r,
+          userId: r.userId || userId,
+          expiresAt: r.expiresAt ?? (r.timestamp ? r.timestamp + ONE_DAY_MS : Date.now() + ONE_DAY_MS),
+          submissionId: r.submissionId || `trn:oid:${Math.floor(21940000000 + Math.random() * 99999999)}`,
+          contentSample: sample,
+          snippets: (cleanedSnippets.length > 0 ? cleanedSnippets : []) as HighlightedSnippet[],
+        };
+      })
+      .filter(r => Boolean(r))
+      .filter(r => {
+        if (userId && r.userId && r.userId !== userId) return false;
+        if (seen.has(r.id)) return false;
+        seen.add(r.id);
+        return true;
+      }),
+    userId
+  );
+};
 
 const INITIAL_CURRENT_USER: User = {
   id: '',
@@ -204,75 +301,7 @@ const INITIAL_CODES: ActivationCode[] = [
   },
 ];
 
-const INITIAL_REPORTS: ScanReport[] = [
-  KUNAL_REPORT,
-  DANISH_REPORT,
-  TURNITIN_FLAGSHIP_REPORT,
-  CYB2103_REPORT,
-  {
-    id: 'rep-101',
-    title: 'Machine Learning in Clinical Diagnostics.docx',
-    fileName: 'Machine Learning in Clinical Diagnostics.docx',
-    fileSize: '2.4 MB',
-    author: 'Kunal Kumar',
-    type: 'Both',
-    status: 'Completed',
-    plagiarismScore: 11,
-    aiScore: 14,
-    wordCount: 3420,
-    characterCount: 22890,
-    date: '2026-09-14 14:22',
-    timestamp: Date.now() - 86400000,
-    excludeBibliography: true,
-    excludeQuotes: true,
-    submissionId: 'trn:oid:21948194812',
-    sources: [
-      { id: 's1', name: 'IEEE Xplore Digital Library', url: 'https://ieeexplore.ieee.org/document/89201', similarity: 6, type: 'publication' },
-      { id: 's2', name: 'Nature Machine Intelligence', url: 'https://nature.com/articles/s42256', similarity: 3, type: 'publication' },
-      { id: 's3', name: 'arXiv.org Scholarly Repository', url: 'https://arxiv.org/abs/2103.0189', similarity: 2, type: 'internet' },
-    ],
-    contentSample: 'Deep learning architectures have revolutionized automated medical imaging. However, synthetic neural network outputs often require strict human verification and cross-validation against verified clinical ground truth.',
-    snippets: [
-      { text: 'Academic integrity in contemporary scientific inquiry mandates rigorous provenance and traceable evidence.', type: 'normal' },
-      { text: 'Deep learning architectures have revolutionized automated medical imaging, enabling high-throughput segmentation.', type: 'plagiarized', sourceName: 'IEEE Xplore Digital Library', sourceIndex: 1, sourceId: 's1', similarityPercentage: 6 },
-      { text: 'Recent developments in foundation models present complex challenges for institutional peer review pipelines.', type: 'normal' },
-      { text: 'Convolutional networks demonstrate superior sensitivity across heterogeneous MRI modalities with significant F1-score enhancement.', type: 'plagiarized', sourceName: 'Nature Machine Intelligence', sourceIndex: 2, sourceId: 's2', similarityPercentage: 3 },
-      { text: 'Systematic benchmarking across peer-reviewed archives confirms that transparent citation protocols substantially diminish inadvertent overlap.', type: 'normal' },
-      { text: 'Furthermore, token-level burstiness curves highlight sections with statistically low lexical variability and formulaic transitions.', type: 'normal' },
-      { text: 'Future research must bridge the divide between heuristic detectors and emerging multimodal foundation models.', type: 'normal' },
-    ],
-  },
-  {
-    id: 'rep-102',
-    title: 'Generative AI Impact on Academic Writing.docx',
-    fileName: 'Generative AI Impact on Academic Writing.docx',
-    fileSize: '1.9 MB',
-    author: 'TurnitScope Researcher',
-    type: 'Both',
-    status: 'Completed',
-    plagiarismScore: 8,
-    aiScore: 48,
-    wordCount: 2890,
-    characterCount: 18450,
-    date: '2026-09-15 10:15',
-    timestamp: Date.now() - 3600000,
-    excludeBibliography: true,
-    excludeQuotes: true,
-    submissionId: 'trn:oid:21948194888',
-    sources: [
-      { id: 's1', name: 'ScienceDirect / Elsevier Archives', url: 'https://sciencedirect.com/science/article/pii', similarity: 5, type: 'publication' },
-      { id: 's2', name: 'Harvard Scholar Repository', url: 'https://harvard.edu/dash/handle/291', similarity: 3, type: 'student_paper' },
-    ],
-    contentSample: 'The widespread adoption of generative deep architectures has prompted extensive debate concerning scholastic output.',
-    snippets: [
-      { text: 'Academic integrity in contemporary scientific inquiry mandates rigorous provenance and traceable evidence.', type: 'normal' },
-      { text: 'The widespread adoption of generative deep architectures has prompted extensive debate concerning scholastic output.', type: 'ai_generated', aiProbability: 48 },
-      { text: 'Within the computational domain, comparative analyses reveal that multi-layered linguistic perplexity provides robust indicators when identifying synthetically generated prose.', type: 'plagiarized', sourceName: 'ScienceDirect / Elsevier Archives', sourceIndex: 1, sourceId: 's1', similarityPercentage: 5 },
-      { text: 'Algorithmic classifiers trained on transformer embeddings exhibit heightened sensitivity to repeated syntactic clause structures.', type: 'ai_generated', aiProbability: 54 },
-      { text: 'Transparent attribution frameworks guarantee that researchers retain full intellectual ownership while adhering to rigorous institutional publication guidelines.', type: 'normal' },
-    ],
-  },
-];
+const INITIAL_REPORTS: ScanReport[] = [];
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
@@ -314,69 +343,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return sanitized;
   });
 
-  const [reports, setReports] = useState<ScanReport[]>(() => {
-    const saved = localStorage.getItem(STORAGE_KEY_REPORTS);
-    if (!saved) return INITIAL_REPORTS;
+  const [reports, setReports] = useState<ScanReport[]>([]);
+
+  useEffect(() => {
+    const userId = currentUser?.id;
+    if (!userId) {
+      setReports([]);
+      return;
+    }
+
+    const saved = localStorage.getItem(getReportsStorageKey(userId));
+    if (!saved) {
+      setReports([]);
+      return;
+    }
+
     try {
       const parsed: ScanReport[] = JSON.parse(saved);
-      const mapped = parsed.map(r => {
-        let sample = cleanText(r.contentSample || '');
-        if (!sample || sample.length < 40 || sample.includes('PK') || sample.includes('docProps')) {
-          sample = generateCleanAcademicContent(r.fileName || r.title);
-        }
-
-        const cleanedSnippets = (r.snippets || []).map((snip, idx) => {
-          let snipText = cleanText(snip.text);
-          if (!snipText || snipText.includes('PK')) {
-            snipText = 'Academic integrity in modern scientific inquiry mandates rigorous provenance and traceable evidence.';
-          }
-          return {
-            ...snip,
-            text: snipText,
-            sourceIndex: snip.sourceIndex || (idx % 3) + 1,
-            sourceId: snip.sourceId || `s${(idx % 3) + 1}`,
-          };
-        });
-
-        return {
-          ...r,
-          submissionId: r.submissionId || `trn:oid:${Math.floor(21940000000 + Math.random() * 99999999)}`,
-          contentSample: sample,
-          snippets: (cleanedSnippets.length > 0 ? cleanedSnippets : [
-            { text: 'Academic integrity in modern scientific inquiry mandates rigorous provenance and traceable evidence.', type: 'normal' as const },
-            { text: 'Recent developments in natural language generation present complex challenges for institutional peer review pipelines.', type: 'ai_generated' as const, aiProbability: r.aiScore || 52 },
-            { text: 'Our comparative analysis reveals that multi-layered linguistic perplexity provides robust indicators when identifying synthetically generated prose.', type: 'plagiarized' as const, sourceName: 'ScienceDirect Archives', sourceIndex: 1, sourceId: 's1', similarityPercentage: r.plagiarismScore || 28 },
-            { text: 'Systematic benchmarking across peer-reviewed archives confirms that transparent citation protocols substantially diminish inadvertent overlap.', type: 'normal' as const },
-            { text: 'Furthermore, token-level burstiness curves highlight sections with statistically low lexical variability and formulaic transitions.', type: 'plagiarized' as const, sourceName: 'Harvard University Student Repository', sourceIndex: 2, sourceId: 's2', similarityPercentage: 8 },
-            { text: 'Further research must bridge the divide between heuristic detectors and emerging multimodal foundation models.', type: 'normal' as const }
-          ]) as HighlightedSnippet[],
-        };
-      });
-      let result: ScanReport[] = mapped;
-      if (!result.some(r => r.id === KUNAL_REPORT.id)) {
-        result = [KUNAL_REPORT, ...result];
-      }
-      if (!result.some(r => r.id === DANISH_REPORT.id)) {
-        result = [DANISH_REPORT, ...result];
-      } else {
-        // Ensure Danish report has full 12 page count and preserve uploaded fileData if present
-        result = result.map(r => (isDanishDocument(r.fileName || r.title) ? { ...DANISH_REPORT, ...r, pageCount: 12, fileData: r.fileData || DANISH_PDF_BASE64, fileMimeType: r.fileMimeType || 'application/pdf' } : r));
-      }
-      if (!result.some(r => r.id === TURNITIN_FLAGSHIP_REPORT.id)) {
-        result = [TURNITIN_FLAGSHIP_REPORT, ...result];
-      }
-
-      // Deduplicate by ID to prevent repeated rows
-      const seen = new Set<string>();
-      return result.filter(r => {
-        if (seen.has(r.id)) return false;
-        seen.add(r.id);
-        return true;
-      });
+      const cleaned = sanitizePersistedReports(parsed, userId);
+      setReports(cleaned);
+      localStorage.setItem(getReportsStorageKey(userId), JSON.stringify(cleaned));
     } catch {
-      return INITIAL_REPORTS;
+      setReports([]);
     }
-  });
+  }, [currentUser?.id]);
 
   const [activationCodes, setActivationCodes] = useState<ActivationCode[]>(() => {
     try {
@@ -448,6 +438,45 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const toggleSidebar = () => setIsSidebarOpen(prev => !prev);
 
+  const syncUsersFromFirestoreIfPossible = async () => {
+    try {
+      const usersSnap = await safeGetDocs(collection(db, 'users'), 3500);
+      if (!usersSnap || usersSnap.empty) return;
+
+      const fsUsers: User[] = [];
+      usersSnap.forEach((docSnap: any) => {
+        const d = docSnap.data();
+        if (d && (d.email || d.name) && !isRemovedUser(d)) {
+          fsUsers.push({
+            id: docSnap.id,
+            name: d.name || (d.email ? d.email.split('@')[0] : 'Academic User'),
+            email: d.email || '',
+            role: isAdminEmail(d.email) ? 'admin' : (d.role || 'client'),
+            credits: typeof d.credits === 'number' ? d.credits : 0,
+            planName: d.planName || 'Standard Verified Plan',
+            planExpiry: d.planExpiry || '2027-12-31',
+            totalScans: typeof d.totalScans === 'number' ? d.totalScans : 0,
+            createdAt: d.createdAt || new Date().toISOString().split('T')[0],
+            emailVerified: !!d.emailVerified,
+            photoURL: d.photoURL || null,
+            authProvider: d.authProvider || 'password',
+          });
+        }
+      });
+
+      if (!fsUsers.some(u => u.email.toLowerCase() === 'admin@turnitscope.com')) {
+        fsUsers.unshift(ADMIN_USER_INITIAL);
+      }
+
+      setUsers(fsUsers);
+      try {
+        localStorage.setItem(STORAGE_KEY_USERS, JSON.stringify(fsUsers));
+      } catch {}
+    } catch {
+      // Ignore permission/offline cases; the in-memory user list is already updated.
+    }
+  };
+
   // Sync to local storage with safe quota handling
   useEffect(() => {
     try {
@@ -470,22 +499,68 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [users]);
 
   useEffect(() => {
-    try {
-      if (reports && reports.length > 0) {
-        // Strip out huge raw fileData / base64 payloads to preserve localStorage quota
-        const safeReports = reports.map(r => {
-          if (r.fileData && r.fileData.length > 50000) {
-            const { fileData, ...rest } = r;
-            return rest;
-          }
-          return r;
-        });
-        localStorage.setItem(STORAGE_KEY_REPORTS, JSON.stringify(safeReports));
+    if (!currentUser?.id) return;
+
+    const expired = reports.filter(report => {
+      const expiresAt = report.expiresAt ?? (report.timestamp ? report.timestamp + ONE_DAY_MS : undefined);
+      return !!expiresAt && expiresAt <= Date.now();
+    });
+
+    if (!expired.length) {
+      try {
+        const safeReports = pruneExpiredReports(reports, currentUser.id).map(r => ({
+          ...r,
+          userId: r.userId || currentUser.id,
+        }));
+        localStorage.setItem(getReportsStorageKey(currentUser.id), JSON.stringify(safeReports));
+      } catch (e) {
+        console.warn('Could not persist reports to localStorage:', e);
       }
-    } catch (e) {
-      console.warn('Could not persist reports to localStorage:', e);
+      return;
     }
-  }, [reports]);
+
+    let isCancelled = false;
+
+    const purgeExpiredReportFiles = async () => {
+      for (const report of expired) {
+        if (!report.storagePath) continue;
+        try {
+          await deleteObject(ref(storage, report.storagePath));
+        } catch (error) {
+          console.warn('Could not delete expired file from Firebase Storage:', error);
+        }
+      }
+
+      if (isCancelled) return;
+
+      const cleaned = reports
+        .filter(report => {
+          const expiresAt = report.expiresAt ?? (report.timestamp ? report.timestamp + ONE_DAY_MS : undefined);
+          return !expiresAt || expiresAt > Date.now();
+        })
+        .map(report => ({
+          ...report,
+          fileData: undefined,
+          text: undefined,
+          htmlContent: undefined,
+          htmlPages: undefined,
+          storagePath: undefined,
+          contentSample: report.contentSample || '',
+        }));
+
+      setReports(cleaned);
+      try {
+        localStorage.setItem(getReportsStorageKey(currentUser.id), JSON.stringify(cleaned));
+      } catch (e) {
+        console.warn('Could not persist cleaned reports to localStorage:', e);
+      }
+    };
+
+    purgeExpiredReportFiles();
+    return () => {
+      isCancelled = true;
+    };
+  }, [reports, currentUser?.id]);
 
   useEffect(() => {
     try {
@@ -545,24 +620,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           } else {
             // New user registration profile in Firestore
             const isDefaultAdmin = isAdminEmail(fbUser.email);
-            const newUser: User = {
-              id: fbUser.uid,
-              name: fbUser.displayName || (isDefaultAdmin ? 'TurnitScope Administrator' : fbUser.email?.split('@')[0]) || 'Verified User',
-              email: fbUser.email || '',
-              role: isDefaultAdmin ? 'admin' : 'client',
-              credits: isDefaultAdmin ? 5000 : 25,
-              planName: isDefaultAdmin ? 'Master Administrator' : 'Standard Verified Plan',
-              planExpiry: '2030-12-31',
-              totalScans: isDefaultAdmin ? 142 : 0,
-              createdAt: new Date().toISOString().split('T')[0],
-              emailVerified: fbUser.emailVerified,
-              photoURL: fbUser.photoURL || null,
-              authProvider: fbUser.providerData?.[0]?.providerId === 'google.com' ? 'google' : 'password',
-            };
+            const newUser = buildUserFromAuthProfile(
+              {
+                uid: fbUser.uid,
+                email: fbUser.email,
+                displayName: fbUser.displayName,
+                photoURL: fbUser.photoURL,
+                emailVerified: fbUser.emailVerified,
+                providerData: fbUser.providerData?.map(provider => ({
+                  providerId: provider.providerId,
+                  email: provider.email,
+                })),
+              },
+              isDefaultAdmin ? 'admin' : 'client'
+            );
             safeSetDoc(userDocRef, newUser).catch(() => {});
             setCurrentUser(newUser);
             setUsers(prev => {
-              const without = prev.filter(u => u.id !== newUser.id && u.email !== newUser.email);
+              const without = prev.filter(u => u.id !== newUser.id && u.email.toLowerCase() !== newUser.email.toLowerCase());
               return [newUser, ...without];
             });
 
@@ -927,8 +1002,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const signInWithGoogleAuth = async () => {
     try {
       const result = await signInWithGoogle();
+      const newUser = buildUserFromAuthProfile({
+        uid: result.user.uid,
+        email: result.user.email,
+        displayName: result.user.displayName,
+        photoURL: result.user.photoURL,
+        emailVerified: result.user.emailVerified,
+        providerData: result.user.providerData?.map(provider => ({
+          providerId: provider.providerId,
+          email: provider.email,
+        })),
+      });
+
+      setCurrentUser(newUser);
+      setFirebaseUser(result.user);
+      setUsers(prev => {
+        const without = prev.filter(u => u.id !== newUser.id && u.email.toLowerCase() !== newUser.email.toLowerCase());
+        return [newUser, ...without];
+      });
+      if (newUser.email) {
+        safeSetDoc(doc(db, 'users', newUser.id), newUser).catch(() => {});
+      }
+      await syncUsersFromFirestoreIfPossible();
+      setActivePanel(newUser.role === 'admin' ? 'admin' : 'client');
       setNotification({
-        message: `Welcome, ${result.user.displayName || result.user.email}! Signed in with Google.`,
+        message: `Welcome, ${newUser.name || newUser.email}! Signed in with Google.`,
         type: 'success',
       });
     } catch (err: unknown) {
@@ -1422,6 +1520,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setNotification({ message: 'Activation code deleted from Firestore', type: 'info' });
   };
 
+  const toggleCodeActivation = (codeId: string) => {
+    if (!isAdminEmail(currentUser.email)) {
+      setNotification({ message: 'Unauthorized: Only administrators can change code visibility.', type: 'error' });
+      return;
+    }
+
+    const targetCode = activationCodes.find(c => c.id === codeId);
+    if (!targetCode) return;
+
+    const nextIsActive = !targetCode.isActive;
+    setActivationCodes(prev =>
+      prev.map(c => (c.id === codeId ? { ...c, isActive: nextIsActive } : c))
+    );
+
+    safeSetDoc(doc(db, 'activation_codes', codeId), { isActive: nextIsActive }, { merge: true }).catch(err => {
+      console.warn('Notice while toggling activation code state in Firestore:', err);
+    });
+
+    setNotification({
+      message: `${targetCode.code} is now ${nextIsActive ? 'active' : 'inactive'} and ${nextIsActive ? 'visible to clients' : 'hidden from clients'}.`,
+      type: 'success',
+    });
+  };
+
   const deleteUser = async (userId: string) => {
     if (!isAdminEmail(currentUser.email)) {
       setNotification({ message: 'Unauthorized: Only administrators can manage user accounts.', type: 'error' });
@@ -1461,6 +1583,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     fileContent?: string;
     institution?: string;
     fileData?: string;
+    storagePath?: string;
     fileMimeType?: string;
     htmlContent?: string;
     htmlPages?: string[];
@@ -1484,192 +1607,211 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setIsScanning(true);
     setScanProgress({ step: 'Uploading and parsing document structure...', percent: 15 });
 
-    await new Promise(r => setTimeout(r, 600));
-    setScanProgress({ step: 'Extracting tokens & checking institutional database...', percent: 45 });
+    try {
+      setScanProgress({ step: 'Extracting text and preparing the document layout...', percent: 45 });
+      setScanProgress({ step: 'Rendering the final report from the uploaded document...', percent: 75 });
 
-    await new Promise(r => setTimeout(r, 700));
-    setScanProgress({ step: 'Cross-matching 94 Billion+ web pages & academic repositories...', percent: 75 });
+      const newBal = currentUser.credits - cost;
+      setCurrentUser(prev => ({
+        ...prev,
+        credits: newBal,
+        totalScans: prev.totalScans + 1,
+      }));
 
-    await new Promise(r => setTimeout(r, 600));
-    setScanProgress({ step: 'Synthesizing AI neural perplexity & semantic fingerprint...', percent: 92 });
-
-    await new Promise(r => setTimeout(r, 500));
-
-    // Deduct credits
-    const newBal = currentUser.credits - cost;
-    setCurrentUser(prev => ({
-      ...prev,
-      credits: newBal,
-      totalScans: prev.totalScans + 1,
-    }));
-
-    setUsers(prev =>
-      prev.map(u =>
-        u.id === currentUser.id
-          ? { ...u, credits: newBal, totalScans: u.totalScans + 1 }
-          : u
-      )
-    );
-
-    if (firebaseUser) {
-      safeSetDoc(
-        doc(db, 'users', firebaseUser.uid),
-        { credits: newBal, totalScans: currentUser.totalScans + 1 },
-        { merge: true }
+      setUsers(prev =>
+        prev.map(u =>
+          u.id === currentUser.id
+            ? { ...u, credits: newBal, totalScans: u.totalScans + 1 }
+            : u
+        )
       );
-    }
 
-    const modeNameMap: Record<ScanMode, 'AI Detection' | 'Plagiarism Check' | 'Both'> = {
-      ai: 'AI Detection',
-      plagiarism: 'Plagiarism Check',
-      both: 'Both',
-    };
-
-    let aiScore = 0;
-    if (options.mode === 'plagiarism') {
-      aiScore = 0;
-    } else {
-      // 70% of the reports: AI detection between 1% and 20% (renders "*% detected as AI", 0 text highlighted)
-      // 15% of the reports: 0% AI detection (renders "0% detected as AI", 0 text highlighted)
-      // 15% of the reports: AI detection between 21% and 70% (proportional text highlighted)
-      const rand = Math.random();
-      if (rand < 0.70) {
-        aiScore = Math.floor(Math.random() * 20) + 1; // 1% to 20%
-      } else if (rand < 0.85) {
-        aiScore = 0; // 0%
-      } else {
-        aiScore = Math.floor(Math.random() * (70 - 21 + 1)) + 21; // 21% to 70%
+      if (firebaseUser) {
+        safeSetDoc(
+          doc(db, 'users', firebaseUser.uid),
+          { credits: newBal, totalScans: currentUser.totalScans + 1 },
+          { merge: true }
+        );
       }
-    }
 
-    // All files should show a similarity percentage strictly between 1% and 17% (never more than 17%)
-    const plagScore = options.mode === 'ai' ? 0 : Math.floor(Math.random() * 17) + 1; // 1% to 17%
+      const modeNameMap: Record<ScanMode, 'AI Detection' | 'Plagiarism Check' | 'Both'> = {
+        ai: 'AI Detection',
+        plagiarism: 'Plagiarism Check',
+        both: 'Both',
+      };
 
-    const excludeQuotesSetting = options.excludeQuotes !== false;
-    const excludeBibliographySetting = options.excludeBibliography !== false;
+      // Local detector distribution: 15% at 0%, 70% at 1-20%, and 15% at 21-70%.
+      // Scores are independent of the document name and drive the existing highlight renderer.
+      const aiEnabled = options.mode === 'ai' || options.mode === 'both';
+      const aiRoll = Math.random();
+      const aiScore = !aiEnabled
+        ? 0
+        : aiRoll < 0.15
+        ? 0
+        : aiRoll < 0.85
+        ? Math.floor(Math.random() * 20) + 1
+        : Math.floor(Math.random() * 50) + 21;
+      const plagScore =
+        options.mode === 'plagiarism' || options.mode === 'both'
+          ? Math.floor(Math.random() * 17) + 1
+          : 0;
+      const excludeQuotesSetting = options.excludeQuotes !== false;
+      const excludeBibliographySetting = options.excludeBibliography !== false;
 
-    const authorFullName =
-      (options.authorFirst || options.authorLast)
-        ? `${options.authorFirst || ''} ${options.authorLast || ''}`.trim()
-        : currentUser.name;
+      const authorFullName =
+        (options.authorFirst || options.authorLast)
+          ? `${options.authorFirst || ''} ${options.authorLast || ''}`.trim()
+          : currentUser.name;
 
-    let sampleText = cleanText(options.fileContent || '');
-    if (!sampleText || sampleText.length < 50 || sampleText.includes('PK') || sampleText.includes('docProps')) {
-      sampleText = generateCleanAcademicContent(options.fileName);
-    }
-
-    const rawWords = sampleText.trim().split(/\s+/).filter(Boolean).length;
-    const calculatedWordCount = Math.max(720, rawWords);
-    const calculatedCharCount = sampleText.length > 500 ? sampleText.length : calculatedWordCount * 6;
-    const calculatedPageCount = options.pageCount || Math.max(1, Math.ceil(calculatedWordCount / 320));
-
-    const sourcesList: MatchedSource[] = generateSourcesForDocument(
-      options.fileName,
-      options.fileName,
-      plagScore
-    );
-
-    const internetSum = sourcesList
-      .filter(s => s.type === 'internet')
-      .reduce((sum, s) => sum + s.similarity, 0);
-    const pubSum = sourcesList
-      .filter(s => s.type === 'publication')
-      .reduce((sum, s) => sum + s.similarity, 0);
-    const studentSum = sourcesList
-      .filter(s => s.type === 'student_paper')
-      .reduce((sum, s) => sum + s.similarity, 0);
-
-    const generatedSnippets: HighlightedSnippet[] = generateSmartSnippets(
-      sampleText,
-      aiScore,
-      plagScore,
-      sourcesList,
-      {
-        excludeQuotes: excludeQuotesSetting,
-        excludeBibliography: excludeBibliographySetting,
+      const sampleText = cleanText(options.fileContent || '');
+      if (!sampleText || sampleText.length < 50 || sampleText.includes('PK') || sampleText.includes('docProps')) {
+        return {
+          success: false,
+          error: 'No readable text could be extracted from this document. Please upload a valid document with actual content to run the scan.',
+        };
       }
-    );
 
-    const newReport: ScanReport = {
-      id: `rep-${Date.now()}`,
-      title: options.fileName,
-      fileName: options.fileName,
-      fileSize: options.fileData ? `${Math.max(0.1, Math.round((options.fileData.length * 0.75) / 1024 / 10.24) / 100)} MB` : '1.8 MB',
-      author: authorFullName || 'Author',
-      type: modeNameMap[options.mode] || 'Both',
-      status: 'Completed',
-      plagiarismScore: plagScore,
-      aiScore: aiScore,
-      wordCount: calculatedWordCount,
-      characterCount: calculatedCharCount,
-      date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + ', ' + new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZoneName: 'short' }),
-      timestamp: Date.now(),
-      excludeBibliography: options.excludeBibliography !== false,
-      excludeQuotes: options.excludeQuotes !== false,
-      submissionId: `trn:oid:${Math.floor(21940000000 + Math.random() * 99999999)}`,
-      sources: sourcesList,
-      contentSample: sampleText,
-      snippets: generatedSnippets,
-      institution: options.institution || currentUser.institution || 'Allama Iqbal Open University',
-      submissionDate: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + ', ' + new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZoneName: 'short' }),
-      downloadDate: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + ', ' + new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZoneName: 'short' }),
-      pageCount: calculatedPageCount,
-      fileData: options.fileData,
-      fileMimeType: options.fileMimeType,
-      text: sampleText,
-      htmlContent: options.htmlContent,
-      htmlPages: options.htmlPages,
-      matchGroups: {
-        notCitedOrQuoted: Math.max(1, Math.round(plagScore * 2.8)),
-        notCitedOrQuotedScore: plagScore,
-        missingQuotations: 0,
-        missingCitation: 0,
-        citedAndQuoted: 0,
-      },
-      sourceDistribution: {
-        internet: internetSum,
-        publications: pubSum,
-        studentPapers: studentSum,
-      },
-      integrityFlagsCount: 0,
-    };
+      const rawWords = sampleText.trim().split(/\s+/).filter(Boolean).length;
+      const calculatedWordCount = Math.max(720, rawWords);
+      const calculatedCharCount = sampleText.length > 500 ? sampleText.length : calculatedWordCount * 6;
+      const calculatedPageCount = options.pageCount || Math.max(1, Math.ceil(calculatedWordCount / 320));
 
-    setReports(prev => [newReport, ...prev]);
+      const sourcesList: MatchedSource[] = generateSourcesForDocument(
+        options.fileName,
+        options.fileName,
+        plagScore
+      );
+      const internetSum = sourcesList
+        .filter(source => source.type === 'internet')
+        .reduce((sum, source) => sum + source.similarity, 0);
+      const pubSum = sourcesList
+        .filter(source => source.type === 'publication')
+        .reduce((sum, source) => sum + source.similarity, 0);
+      const studentSum = sourcesList
+        .filter(source => source.type === 'student_paper')
+        .reduce((sum, source) => sum + source.similarity, 0);
 
-    // Save report to Firestore if user logged in
-    if (firebaseUser) {
-      safeSetDoc(doc(db, 'reports', newReport.id), {
-        ...newReport,
-        userId: firebaseUser.uid,
+      const generatedSnippets: HighlightedSnippet[] = generateSmartSnippets(
+        sampleText,
+        aiScore,
+        plagScore,
+        sourcesList,
+        {
+          excludeQuotes: excludeQuotesSetting,
+          excludeBibliography: excludeBibliographySetting,
+        }
+      );
+
+      const now = Date.now();
+      const newReport: ScanReport = {
+        id: `rep-${Date.now()}`,
+        userId: currentUser.id,
+        expiresAt: now + ONE_DAY_MS,
+        title: options.fileName,
+        fileName: options.fileName,
+        fileSize: options.fileData ? `${Math.max(0.1, Math.round((options.fileData.length * 0.75) / 1024 / 10.24) / 100)} MB` : '1.8 MB',
+        author: authorFullName || 'Author',
+        type: modeNameMap[options.mode] || 'Both',
+        status: 'Completed',
+        plagiarismScore: plagScore,
+        aiScore: aiScore,
+        wordCount: calculatedWordCount,
+        characterCount: calculatedCharCount,
+        date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + ', ' + new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZoneName: 'short' }),
+        timestamp: now,
+        excludeBibliography: options.excludeBibliography !== false,
+        excludeQuotes: options.excludeQuotes !== false,
+        submissionId: `trn:oid:${Math.floor(21940000000 + Math.random() * 99999999)}`,
+        sources: sourcesList,
+        contentSample: sampleText,
+        snippets: generatedSnippets,
+        institution: options.institution || currentUser.institution || 'Allama Iqbal Open University',
+        submissionDate: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + ', ' + new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZoneName: 'short' }),
+        downloadDate: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + ', ' + new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZoneName: 'short' }),
+        pageCount: calculatedPageCount,
+        fileData: options.fileData,
+        storagePath: options.storagePath,
+        fileMimeType: options.fileMimeType,
+        text: sampleText,
+        htmlContent: options.htmlContent,
+        htmlPages: options.htmlPages,
+        matchGroups: {
+          notCitedOrQuoted: 0,
+          notCitedOrQuotedScore: 0,
+          missingQuotations: 0,
+          missingCitation: 0,
+          citedAndQuoted: 0,
+        },
+        sourceDistribution: {
+          internet: internetSum,
+          publications: pubSum,
+          studentPapers: studentSum,
+        },
+        integrityFlagsCount: 0,
+      };
+
+      setReports(prev => {
+        const merged = [newReport, ...prev.filter(r => r.id !== newReport.id)];
+        return pruneExpiredReports(merged, currentUser.id);
       });
+
+      if (firebaseUser) {
+        safeSetDoc(doc(db, 'reports', newReport.id), {
+          ...newReport,
+          userId: firebaseUser.uid,
+          expiresAt: newReport.expiresAt,
+        });
+      }
+
+      const scanTxn: CreditTransaction = {
+        id: `tx-${Date.now()}`,
+        userId: currentUser.id,
+        userName: currentUser.name,
+        amount: -cost,
+        balanceAfter: newBal,
+        type: 'scan_deduction',
+        note: `Scanned document: ${options.fileName} (${modeNameMap[options.mode]})`,
+        date: new Date().toISOString().replace('T', ' ').substring(0, 16),
+        timestamp: Date.now(),
+      };
+      setTransactions(prev => [scanTxn, ...prev]);
+
+      setScanProgress({ step: 'Finalizing report and rendering document...', percent: 100 });
+      setTimeout(() => {
+        setIsScanning(false);
+        setScanProgress(null);
+      }, 300);
+
+      setNotification({
+        message: `Scan finished! Report generated successfully (-${cost} credits).`,
+        type: 'success',
+      });
+
+      return { success: true, report: newReport };
+    } catch (error) {
+      console.error('Scan failed:', error);
+      setIsScanning(false);
+      setScanProgress(null);
+      setNotification({
+        message: 'Scan failed while processing the document. Please try again.',
+        type: 'error',
+      });
+      return { success: false, error: 'Scan failed while processing the document.' };
     }
-
-    // Transaction
-    const scanTxn: CreditTransaction = {
-      id: `tx-${Date.now()}`,
-      userId: currentUser.id,
-      userName: currentUser.name,
-      amount: -cost,
-      balanceAfter: newBal,
-      type: 'scan_deduction',
-      note: `Scanned document: ${options.fileName} (${modeNameMap[options.mode]})`,
-      date: new Date().toISOString().replace('T', ' ').substring(0, 16),
-      timestamp: Date.now(),
-    };
-    setTransactions(prev => [scanTxn, ...prev]);
-
-    setIsScanning(false);
-    setScanProgress(null);
-    setNotification({
-      message: `Scan finished! Report generated successfully (-${cost} credits).`,
-      type: 'success',
-    });
-
-    return { success: true, report: newReport };
   };
 
   const deleteReport = (reportId: string) => {
     setReports(prev => prev.filter(r => r.id !== reportId));
+    if (currentUser?.id) {
+      const storageKey = getReportsStorageKey(currentUser.id);
+      const saved = localStorage.getItem(storageKey);
+      if (saved) {
+        try {
+          const items: ScanReport[] = JSON.parse(saved).filter((r: ScanReport) => r.id !== reportId);
+          localStorage.setItem(storageKey, JSON.stringify(items));
+        } catch {}
+      }
+    }
     setNotification({ message: 'Report removed', type: 'info' });
   };
 
@@ -1701,7 +1843,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setReports(INITIAL_REPORTS);
     setActivationCodes(INITIAL_CODES);
     setTransactions([]);
-    setNotification({ message: 'Database reset to initial demo state', type: 'info' });
+    setNotification({ message: 'Database reset to clean deployment state', type: 'info' });
   };
 
   return (
@@ -1737,6 +1879,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         redeemCode,
         generateCode,
         deleteCode,
+        toggleCodeActivation,
         runScan,
         deleteReport,
         updateCurrentUser,

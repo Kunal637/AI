@@ -38,8 +38,7 @@ export const AdminPanel: React.FC = () => {
     addUserAsAdmin,
     updateUserAsAdmin,
     deleteUser,
-    generateCode,
-    deleteCode,
+    toggleCodeActivation,
     refreshFromFirestore,
     isFirestoreSyncing,
     setActivePanel,
@@ -70,13 +69,6 @@ export const AdminPanel: React.FC = () => {
   const [newUserPlan, setNewUserPlan] = useState<string>('Standard Verified Plan');
   const [isCreatingUser, setIsCreatingUser] = useState<boolean>(false);
 
-  // Generate code form state
-  const [newCodeName, setNewCodeName] = useState('');
-  const [newCodeCredits, setNewCodeCredits] = useState<number>(20);
-  const [newCodeMaxUses, setNewCodeMaxUses] = useState<number>(50);
-  const [newCodeNote, setNewCodeNote] = useState('');
-  const [codeCopied, setCodeCopied] = useState<string | null>(null);
-
   // User search filter
   const [userSearch, setUserSearch] = useState('');
 
@@ -85,7 +77,7 @@ export const AdminPanel: React.FC = () => {
   const [isDeletingUser, setIsDeletingUser] = useState(false);
 
   // Selected tab in admin
-  const [adminTab, setAdminTab] = useState<'allocate' | 'codes' | 'users' | 'logs'>('allocate');
+  const [adminTab, setAdminTab] = useState<'allocate' | 'users' | 'logs'>('allocate');
 
   const selectedUser = users.find(u => u.id === selectedUserId) || currentUser;
 
@@ -101,21 +93,6 @@ export const AdminPanel: React.FC = () => {
     }
   };
 
-  // Handle generating code
-  const handleGenerateCode = (e: React.FormEvent) => {
-    e.preventDefault();
-    const codeToUse = newCodeName.trim() || `TC-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
-    generateCode(codeToUse, newCodeCredits, newCodeMaxUses, newCodeNote);
-    setNewCodeName('');
-    setNewCodeNote('');
-  };
-
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text);
-    setCodeCopied(text);
-    setTimeout(() => setCodeCopied(null), 2500);
-  };
-
   // Aggregate stats
   const totalCreditsInCirculation = users.reduce((acc, u) => acc + u.credits, 0);
   const totalScansAllUsers = users.reduce((acc, u) => acc + u.totalScans, 0);
@@ -129,23 +106,23 @@ export const AdminPanel: React.FC = () => {
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col select-none" id="admin-panel-root">
       {/* Top Admin Navigation Header */}
-      <header className="bg-slate-950/80 border-b border-slate-800 px-6 py-4 flex items-center justify-between sticky top-0 z-30 backdrop-blur-md">
-        <div className="flex items-center gap-4">
+      <header className="bg-slate-950/80 border-b border-slate-800 px-3 sm:px-6 py-3 sm:py-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sticky top-0 z-30 backdrop-blur-md">
+        <div className="flex items-center gap-3 sm:gap-4 min-w-0">
           <TurnitScopeLogo size="sm" variant="dark" showSubtitle={false} />
-          <div className="h-5 w-px bg-slate-800" />
-          <div className="flex items-center gap-2">
-            <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-400/10 text-amber-400 border border-amber-400/20 flex items-center gap-1.5">
+          <div className="h-5 w-px bg-slate-800 hidden sm:block" />
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-400/10 text-amber-400 border border-amber-400/20 flex items-center gap-1.5 whitespace-nowrap">
               <Shield className="w-3 h-3" />
               Admin Portal
             </span>
-            <span className="text-xs text-slate-400 hidden sm:inline">
+            <span className="text-xs text-slate-400 hidden md:inline truncate">
               Credit Management & Provisioning
             </span>
           </div>
         </div>
 
         {/* Admin Actions */}
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2.5 flex-wrap justify-between sm:justify-end">
           <div className="hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-xs">
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
             <span className="text-slate-400">Firestore DB:</span>
@@ -202,9 +179,9 @@ export const AdminPanel: React.FC = () => {
       </header>
 
       {/* Admin Content Area */}
-      <main className="flex-1 max-w-7xl w-full mx-auto p-6 space-y-6">
+      <main className="flex-1 max-w-7xl w-full mx-auto p-3 sm:p-6 space-y-6">
         {/* KPI Stats Banner */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4" id="admin-kpi-grid">
+        <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 sm:gap-4" id="admin-kpi-grid">
           <div className="bg-slate-800/60 border border-slate-700/60 rounded-2xl p-4">
             <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
               <span>Total Active Credits</span>
@@ -259,7 +236,7 @@ export const AdminPanel: React.FC = () => {
         </div>
 
         {/* Sub-Navigation Tabs */}
-        <div className="flex items-center gap-2 border-b border-slate-800 pb-2 overflow-x-auto">
+        <div className="flex items-center gap-2 border-b border-slate-800 pb-2 overflow-x-auto flex-wrap sm:flex-nowrap">
           <button
             onClick={() => setAdminTab('allocate')}
             className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 ${
@@ -270,18 +247,6 @@ export const AdminPanel: React.FC = () => {
           >
             <Coins className="w-3.5 h-3.5" />
             <span>Give Credits to User</span>
-          </button>
-
-          <button
-            onClick={() => setAdminTab('codes')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 ${
-              adminTab === 'codes'
-                ? 'bg-indigo-600 text-white shadow-sm'
-                : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
-            }`}
-          >
-            <Ticket className="w-3.5 h-3.5" />
-            <span>Activation Codes ({activationCodes.length})</span>
           </button>
 
           <button
@@ -313,7 +278,7 @@ export const AdminPanel: React.FC = () => {
         {adminTab === 'allocate' && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6" id="give-credits-panel">
             {/* Credit Allocation Form (Left 2 columns) */}
-            <div className="lg:col-span-2 bg-slate-800/60 border border-slate-700/70 rounded-2xl p-6 space-y-6">
+            <div className="lg:col-span-2 bg-slate-800/60 border border-slate-700/70 rounded-2xl p-4 sm:p-6 space-y-5 sm:space-y-6">
               <div>
                 <h3 className="text-base font-bold text-white flex items-center gap-2">
                   <Coins className="w-5 h-5 text-amber-400" />
@@ -356,7 +321,7 @@ export const AdminPanel: React.FC = () => {
                   </div>
 
                   {/* Preset Buttons */}
-                  <div className="grid grid-cols-5 gap-2 mb-3">
+                  <div className="grid grid-cols-3 sm:grid-cols-5 gap-2 mb-3">
                     {[5, 10, 25, 50, 100].map(amt => (
                       <button
                         type="button"
@@ -430,7 +395,7 @@ export const AdminPanel: React.FC = () => {
             </div>
 
             {/* Recipient User Preview Card (Right column) */}
-            <div className="bg-slate-800/60 border border-slate-700/70 rounded-2xl p-6 flex flex-col justify-between space-y-4">
+            <div className="bg-slate-800/60 border border-slate-700/70 rounded-2xl p-4 sm:p-6 flex flex-col justify-between space-y-4">
               <div>
                 <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-4">
                   Selected User Profile
@@ -488,146 +453,67 @@ export const AdminPanel: React.FC = () => {
                 </div>
               )}
             </div>
-          </div>
-        )}
 
-        {/* Tab 2: ACTIVATION CODES GENERATOR & LIST */}
-        {adminTab === 'codes' && (
-          <div className="space-y-6">
-            {/* Generator Card */}
-            <div className="bg-slate-800/60 border border-slate-700/70 rounded-2xl p-6">
-              <h3 className="text-sm font-bold text-white mb-1 flex items-center gap-2">
-                <Ticket className="w-4 h-4 text-indigo-400" />
-                <span>Create Activation Code (Promo Voucher)</span>
-              </h3>
-              <p className="text-xs text-slate-400 mb-4">
-                Generate redeemable vouchers that clients can enter in their "Redeem Code" tab to claim credits.
-              </p>
-
-              <form onSubmit={handleGenerateCode} className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+            <div className="mt-6 bg-slate-800/60 border border-slate-700/70 rounded-2xl p-4 sm:p-6 space-y-4">
+              <div className="flex items-center justify-between gap-3">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1">
-                    Code (e.g. TC-PRO100)
-                  </label>
-                  <input
-                    type="text"
-                    value={newCodeName}
-                    onChange={e => setNewCodeName(e.target.value.toUpperCase())}
-                    placeholder="Auto-generate or enter..."
-                    className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/40 uppercase"
-                  />
+                  <h3 className="text-base font-bold text-white flex items-center gap-2">
+                    <Ticket className="w-4 h-4 text-rose-400" />
+                    <span>Voucher Visibility Controls</span>
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Toggle codes on or off. Only active codes are shown to users in the redemption page.
+                  </p>
                 </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1">
-                    Credit Value
-                  </label>
-                  <input
-                    type="number"
-                    min="1"
-                    value={newCodeCredits}
-                    onChange={e => setNewCodeCredits(parseInt(e.target.value) || 1)}
-                    className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1">
-                    Max Redemptions
-                  </label>
-                  <input
-                    type="number"
-                    min="1"
-                    value={newCodeMaxUses}
-                    onChange={e => setNewCodeMaxUses(parseInt(e.target.value) || 1)}
-                    className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
-                  />
-                </div>
-
-                <div className="flex items-end">
-                  <button
-                    type="submit"
-                    className="w-full py-2 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white transition shadow-sm"
-                  >
-                    + Generate Voucher
-                  </button>
-                </div>
-              </form>
-            </div>
-
-            {/* Codes List Table */}
-            <div className="bg-slate-800/60 border border-slate-700/70 rounded-2xl overflow-hidden">
-              <div className="p-4 border-b border-slate-700 flex items-center justify-between">
-                <span className="text-xs font-bold text-slate-300">
-                  Active Activation Codes
-                </span>
-                <span className="text-xs text-slate-400">
-                  {activationCodes.length} codes available
+                <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">
+                  {activationCodes.filter(code => code.isActive).length} active
                 </span>
               </div>
 
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs">
-                  <thead>
-                    <tr className="bg-slate-900/60 border-b border-slate-700 text-slate-400 text-[11px] font-bold">
-                      <th className="py-3 px-5">Code</th>
-                      <th className="py-3 px-4">Credits Granted</th>
-                      <th className="py-3 px-4">Usage / Max</th>
-                      <th className="py-3 px-4">Created Date</th>
-                      <th className="py-3 px-4">Note</th>
-                      <th className="py-3 px-5 text-right">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-700/60 text-slate-300">
-                    {activationCodes.map(c => (
-                      <tr key={c.id} className="hover:bg-slate-750 transition">
-                        <td className="py-3.5 px-5 font-mono font-bold text-white flex items-center gap-2">
-                          <span>{c.code}</span>
-                          <button
-                            onClick={() => copyToClipboard(c.code)}
-                            className="p-1 hover:text-indigo-400 text-slate-500 rounded transition"
-                            title="Copy code"
-                          >
-                            <Copy className="w-3 h-3" />
-                          </button>
-                          {codeCopied === c.code && (
-                            <span className="text-[10px] text-emerald-400 font-sans">
-                              Copied!
-                            </span>
-                          )}
-                        </td>
-                        <td className="py-3.5 px-4 font-mono font-bold text-amber-400">
-                          +{c.credits} Credits
-                        </td>
-                        <td className="py-3.5 px-4 font-mono text-slate-300">
-                          {c.usedCount} / {c.maxUses}
-                        </td>
-                        <td className="py-3.5 px-4 text-slate-400">{c.createdAt}</td>
-                        <td className="py-3.5 px-4 text-slate-400 max-w-xs truncate">
-                          {c.note || '—'}
-                        </td>
-                        <td className="py-3.5 px-5 text-right">
-                          <button
-                            onClick={() => deleteCode(c.id)}
-                            className="p-1.5 text-slate-500 hover:text-rose-400 rounded transition"
-                            title="Delete code"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div className="space-y-3">
+                {activationCodes.map(code => (
+                  <div key={code.id} className="flex items-center justify-between gap-3 rounded-xl border border-slate-700 bg-slate-900/60 px-3 py-2.5">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-mono text-sm font-bold text-white">{code.code}</span>
+                        <span className="text-[10px] text-amber-300 font-semibold">+{code.credits} credits</span>
+                        {code.isActive ? (
+                          <span className="text-[10px] rounded-full bg-emerald-500/15 text-emerald-300 px-1.5 py-0.5 border border-emerald-500/20">
+                            Active
+                          </span>
+                        ) : (
+                          <span className="text-[10px] rounded-full bg-slate-700 text-slate-300 px-1.5 py-0.5 border border-slate-600">
+                            Inactive
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[11px] text-slate-400 mt-1">
+                        Used {code.usedCount} / {code.maxUses} • {code.note || 'Admin created code'}
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => toggleCodeActivation(code.id)}
+                      className={`px-3 py-2 rounded-lg text-[11px] font-bold border transition ${
+                        code.isActive
+                          ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/25'
+                          : 'bg-slate-700 text-slate-200 border-slate-600 hover:bg-slate-600'
+                      }`}
+                    >
+                      {code.isActive ? 'Disable' : 'Enable'}
+                    </button>
+                  </div>
+                ))}
               </div>
             </div>
           </div>
         )}
 
-        {/* Tab 3: CLIENT USER LIST */}
+        {/* Tab 2: CLIENT USER LIST */}
         {adminTab === 'users' && (
           <div className="bg-slate-800/60 border border-slate-700/70 rounded-2xl overflow-hidden">
-            <div className="p-4 border-b border-slate-700 flex flex-col sm:flex-row items-center justify-between gap-3">
+            <div className="p-3 sm:p-4 border-b border-slate-700 flex flex-col sm:flex-row items-center justify-between gap-3">
               <div className="relative w-full sm:w-72">
                 <input
                   type="text"

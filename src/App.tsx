@@ -67,7 +67,7 @@ const AppContent: React.FC = () => {
       {isAdmin ? (
         <AdminPanel />
       ) : (
-        <div className="min-h-screen bg-[#f8fafc] flex flex-row relative font-['Plus_Jakarta_Sans',sans-serif]" id="app-client-root">
+        <div className="min-h-screen bg-[#f8fafc] flex flex-col md:flex-row relative font-['Plus_Jakarta_Sans',sans-serif] overflow-x-hidden" id="app-client-root">
           {/* Client Left Sidebar */}
           <ClientSidebar />
 
@@ -77,7 +77,7 @@ const AppContent: React.FC = () => {
             <ClientHeader title={pageInfo.title} iconSuffix={pageInfo.iconSuffix} />
 
             {/* View Content */}
-            <main className="flex-1 p-6 md:p-8 max-w-7xl w-full mx-auto">
+            <main className="flex-1 p-4 sm:p-6 md:p-8 max-w-7xl w-full mx-auto">
               {activeTab === 'dashboard' && (
                 <DashboardView onOpenReport={(rep: ScanReport) => setSelectedReport(rep)} />
               )}

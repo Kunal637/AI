@@ -27,11 +27,13 @@ import {
 interface TurnitinOfficialMultiPageReportProps {
   report: ScanReport;
   defaultType?: 'ai' | 'similarity';
+  allowBothModes?: boolean;
 }
 
 export const TurnitinOfficialMultiPageReport: React.FC<TurnitinOfficialMultiPageReportProps> = ({
   report,
   defaultType = 'similarity',
+  allowBothModes = false,
 }) => {
   const [reportType, setReportType] = useState<'similarity' | 'ai'>(defaultType);
   const [currentPageView, setCurrentPageView] = useState<number | 'all'>('all');
@@ -41,9 +43,13 @@ export const TurnitinOfficialMultiPageReport: React.FC<TurnitinOfficialMultiPage
 
   const currentLayout = getReportPageLayout(report, reportType);
   const totalPages = currentLayout.totalPages;
+  const isLargeDocument = totalPages > 18;
+  const pageWindowSize = totalPages > 40 ? 5 : 7;
 
   const simLayout = getReportPageLayout(report, 'similarity');
   const aiLayout = getReportPageLayout(report, 'ai');
+  const canDownloadSimilarityReport = report.type === 'Plagiarism Check' || report.type === 'Both';
+  const canDownloadAiReport = report.type === 'AI Detection' || report.type === 'Both';
 
   const handleDownload = async (typeToDownload: 'similarity' | 'ai') => {
     const prevView = currentPageView;
@@ -83,7 +89,15 @@ export const TurnitinOfficialMultiPageReport: React.FC<TurnitinOfficialMultiPage
     window.print();
   };
 
-  const showAll = currentPageView === 'all' || isExporting;
+  const showAll = (!isLargeDocument && currentPageView === 'all') || isExporting;
+  const anchorPageNumber = typeof currentPageView === 'number' ? currentPageView : 1;
+  const visiblePages = showAll
+    ? currentLayout.pages
+    : currentLayout.pages.filter(page => {
+        const start = Math.max(1, anchorPageNumber - Math.floor(pageWindowSize / 2));
+        const end = Math.min(totalPages, anchorPageNumber + Math.ceil(pageWindowSize / 2));
+        return page.pageNumber >= start && page.pageNumber <= end;
+      });
 
   return (
     <div className="flex flex-col h-full bg-[#f1f5f9] text-slate-900 font-sans overflow-hidden select-text relative">
@@ -126,7 +140,7 @@ export const TurnitinOfficialMultiPageReport: React.FC<TurnitinOfficialMultiPage
           </span>
 
           {/* Integrity & Similarity Report Tab */}
-          <button
+          {(allowBothModes || report.type === 'Plagiarism Check') && <button
             onClick={() => {
               setReportType('similarity');
               setCurrentPageView('all');
@@ -139,10 +153,10 @@ export const TurnitinOfficialMultiPageReport: React.FC<TurnitinOfficialMultiPage
           >
             <span className="w-2.5 h-2.5 rounded-full bg-rose-600" />
             <span>Similarity & Integrity Report ({simLayout.totalPages} Pages)</span>
-          </button>
+          </button>}
 
           {/* AI Writing Report Tab */}
-          <button
+          {(allowBothModes || report.type === 'AI Detection') && <button
             onClick={() => {
               setReportType('ai');
               setCurrentPageView('all');
@@ -155,12 +169,12 @@ export const TurnitinOfficialMultiPageReport: React.FC<TurnitinOfficialMultiPage
           >
             <Bot className="w-3.5 h-3.5 text-purple-600" />
             <span>AI Writing Report ({aiLayout.totalPages} Pages)</span>
-          </button>
+          </button>}
         </div>
 
         {/* Center: Page Jump Navigation */}
         <div className="flex items-center gap-2 bg-slate-100 p-1 rounded-xl text-xs font-medium">
-          <button
+          {!isLargeDocument && (allowBothModes || report.type === 'Plagiarism Check') && <button
             onClick={() => setCurrentPageView('all')}
             className={`px-2.5 py-1 rounded-lg transition ${
               currentPageView === 'all'
@@ -169,34 +183,36 @@ export const TurnitinOfficialMultiPageReport: React.FC<TurnitinOfficialMultiPage
             }`}
           >
             All Pages
-          </button>
+          </button>}
 
-          <div className="h-4 w-px bg-slate-300 mx-0.5" />
+          {!isLargeDocument && <div className="h-4 w-px bg-slate-300 mx-0.5" />}
 
-          <button
+          {(allowBothModes || report.type === 'AI Detection') && <button
             onClick={() => {
-              if (currentPageView === 'all' || currentPageView === 1) {
+              const currentNumber = typeof currentPageView === 'number' ? currentPageView : 1;
+              if (showAll && !isLargeDocument) {
                 setCurrentPageView(totalPages);
               } else {
-                setCurrentPageView(currentPageView - 1);
+                setCurrentPageView(currentNumber <= 1 ? totalPages : currentNumber - 1);
               }
             }}
             className="p-1 rounded text-slate-600 hover:text-slate-900 hover:bg-slate-200 transition"
             title="Previous Page"
           >
             <ChevronLeft className="w-3.5 h-3.5" />
-          </button>
+          </button>}
 
           <span className="px-1 text-slate-700 font-mono text-[11px] font-semibold">
-            {currentPageView === 'all' ? `1 - ${totalPages}` : `${currentPageView} of ${totalPages}`}
+            {showAll && !isLargeDocument ? `1 - ${totalPages}` : `${anchorPageNumber} of ${totalPages}`}
           </span>
 
           <button
             onClick={() => {
-              if (currentPageView === 'all' || currentPageView === totalPages) {
+              const currentNumber = typeof currentPageView === 'number' ? currentPageView : 1;
+              if (showAll && !isLargeDocument) {
                 setCurrentPageView(1);
               } else {
-                setCurrentPageView(currentPageView + 1);
+                setCurrentPageView(currentNumber >= totalPages ? 1 : currentNumber + 1);
               }
             }}
             className="p-1 rounded text-slate-600 hover:text-slate-900 hover:bg-slate-200 transition"
@@ -227,37 +243,39 @@ export const TurnitinOfficialMultiPageReport: React.FC<TurnitinOfficialMultiPage
             </button>
           </div>
 
-          {/* Quick Download Similarity Report */}
-          <button
-            onClick={() => handleDownload('similarity')}
-            disabled={isExporting}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition shadow-xs active:scale-98 disabled:opacity-75 ${
-              reportType === 'similarity'
-                ? 'bg-rose-600 hover:bg-rose-700 text-white shadow-rose-600/20'
-                : 'bg-white hover:bg-slate-50 text-slate-700 border border-slate-200'
-            }`}
-            title={`Download full ${simLayout.totalPages}-page Similarity & Integrity Report PDF`}
-            id="btn-download-similarity-pdf"
-          >
-            <Download className="w-3.5 h-3.5" />
-            <span>Similarity PDF ({simLayout.totalPages}p)</span>
-          </button>
+          {canDownloadSimilarityReport && (
+            <button
+              onClick={() => handleDownload('similarity')}
+              disabled={isExporting}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition shadow-xs active:scale-98 disabled:opacity-75 ${
+                reportType === 'similarity'
+                  ? 'bg-rose-600 hover:bg-rose-700 text-white shadow-rose-600/20'
+                  : 'bg-white hover:bg-slate-50 text-slate-700 border border-slate-200'
+              }`}
+              title={`Download full ${simLayout.totalPages}-page Similarity & Integrity Report PDF`}
+              id="btn-download-similarity-pdf"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Similarity PDF ({simLayout.totalPages}p)</span>
+            </button>
+          )}
 
-          {/* Quick Download AI Report */}
-          <button
-            onClick={() => handleDownload('ai')}
-            disabled={isExporting}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition shadow-xs active:scale-98 disabled:opacity-75 ${
-              reportType === 'ai'
-                ? 'bg-purple-600 hover:bg-purple-700 text-white shadow-purple-600/20'
-                : 'bg-white hover:bg-slate-50 text-slate-700 border border-slate-200'
-            }`}
-            title={`Download full ${aiLayout.totalPages}-page AI Writing Report PDF`}
-            id="btn-download-ai-pdf"
-          >
-            <Download className="w-3.5 h-3.5" />
-            <span>AI Report PDF ({aiLayout.totalPages}p)</span>
-          </button>
+          {canDownloadAiReport && (
+            <button
+              onClick={() => handleDownload('ai')}
+              disabled={isExporting}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition shadow-xs active:scale-98 disabled:opacity-75 ${
+                reportType === 'ai'
+                  ? 'bg-purple-600 hover:bg-purple-700 text-white shadow-purple-600/20'
+                  : 'bg-white hover:bg-slate-50 text-slate-700 border border-slate-200'
+              }`}
+              title={`Download full ${aiLayout.totalPages}-page AI Writing Report PDF`}
+              id="btn-download-ai-pdf"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>AI Report PDF ({aiLayout.totalPages}p)</span>
+            </button>
+          )}
 
           {/* Print */}
           <button
@@ -276,9 +294,7 @@ export const TurnitinOfficialMultiPageReport: React.FC<TurnitinOfficialMultiPage
           style={{ transform: `scale(${zoomLevel / 100})`, transformOrigin: 'top center' }}
           className="transition-transform duration-150 flex flex-col items-center gap-8 w-full max-w-4xl"
         >
-          {currentLayout.pages.map(page => {
-            if (!showAll && currentPageView !== page.pageNumber) return null;
-
+          {visiblePages.map(page => {
             return (
               <div
                 key={`page-node-${reportType}-${page.pageNumber}`}

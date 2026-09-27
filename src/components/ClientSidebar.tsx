@@ -33,8 +33,8 @@ export const ClientSidebar: React.FC = () => {
 
   return (
     <aside
-      className={`bg-white border-r border-slate-200/80 flex flex-col justify-between shrink-0 min-h-screen select-none sticky top-0 transition-all duration-200 z-20 ${
-        isSidebarOpen ? 'w-64' : 'w-20'
+      className={`bg-white/95 border-b md:border-b-0 md:border-r border-slate-200/80 flex flex-col justify-between shrink-0 select-none md:sticky md:top-0 transition-all duration-200 z-20 w-full md:min-h-screen shadow-sm md:shadow-none ${
+        isSidebarOpen ? 'md:w-64' : 'md:w-20'
       }`}
       id="client-sidebar"
     >
@@ -76,7 +76,7 @@ export const ClientSidebar: React.FC = () => {
         </div>
 
         {/* Navigation items */}
-        <nav className={`space-y-1.5 transition-all duration-200 ${isSidebarOpen ? 'p-4' : 'p-2'}`} id="sidebar-nav">
+        <nav className={`flex flex-row md:flex-col gap-1.5 overflow-x-auto md:overflow-visible transition-all duration-200 scrollbar-hide ${isSidebarOpen ? 'p-3 md:p-4' : 'p-2'}`} id="sidebar-nav">
           {navItems.map(item => {
             const Icon = item.icon;
             const isActive = activeTab === item.id;
@@ -86,7 +86,7 @@ export const ClientSidebar: React.FC = () => {
                 id={`nav-${item.id}`}
                 onClick={() => setActiveTab(item.id)}
                 title={!isSidebarOpen ? item.label : undefined}
-                className={`w-full flex items-center rounded-xl text-sm font-semibold transition-all duration-150 ${
+                className={`w-full min-w-[110px] flex items-center rounded-xl text-sm font-semibold transition-all duration-150 ${
                   isSidebarOpen ? 'gap-3.5 px-4 py-3' : 'justify-center p-3'
                 } ${
                   isActive
@@ -107,7 +107,7 @@ export const ClientSidebar: React.FC = () => {
       </div>
 
       {/* Bottom Section: Credits Bar & User Profile */}
-      <div className={`space-y-3 border-t border-slate-100 transition-all duration-200 ${isSidebarOpen ? 'p-4' : 'p-2'}`}>
+      <div className={`space-y-3 border-t border-slate-100 transition-all duration-200 ${isSidebarOpen ? 'p-3 md:p-4' : 'p-2'}`}>
         {/* Credits Status Pill */}
         <div
           onClick={() => setActiveTab('redeem')}

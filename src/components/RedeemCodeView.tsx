@@ -5,6 +5,7 @@ import { Ticket, Sparkles, CheckCircle2, AlertCircle, ArrowRight, Shield } from 
 export const RedeemCodeView: React.FC = () => {
   const { currentUser, redeemCode, activationCodes, setActivePanel } = useApp();
   const [code, setCode] = useState('');
+  const activeCodes = activationCodes.filter(c => c.isActive && c.usedCount < c.maxUses);
   const [redeemStatus, setRedeemStatus] = useState<{
     type: 'success' | 'error';
     message: string;
@@ -134,15 +135,19 @@ export const RedeemCodeView: React.FC = () => {
             )}
           </div>
           <div className="flex flex-wrap gap-2 justify-center">
-            {activationCodes.slice(0, 3).map(c => (
-              <button
-                key={c.id}
-                onClick={() => handleQuickFill(c.code)}
-                className="text-[11px] bg-slate-100 hover:bg-indigo-50 hover:text-indigo-700 text-slate-700 font-mono font-semibold px-2.5 py-1 rounded-lg border border-slate-200 transition"
-              >
-                {c.code} (+{c.credits} credits)
-              </button>
-            ))}
+            {activeCodes.length > 0 ? (
+              activeCodes.slice(0, 3).map(c => (
+                <button
+                  key={c.id}
+                  onClick={() => handleQuickFill(c.code)}
+                  className="text-[11px] bg-slate-100 hover:bg-indigo-50 hover:text-indigo-700 text-slate-700 font-mono font-semibold px-2.5 py-1 rounded-lg border border-slate-200 transition"
+                >
+                  {c.code} (+{c.credits} credits)
+                </button>
+              ))
+            ) : (
+              <p className="text-[11px] text-slate-500">No active voucher codes are currently available.</p>
+            )}
           </div>
         </div>
       </div>

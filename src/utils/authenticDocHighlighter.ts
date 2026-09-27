@@ -333,7 +333,15 @@ export function computeHighlightsForPage(
       }
     }
 
-    if (isExcludedFromHighlighting(lineText)) continue;
+    // Never allow either AI or similarity highlights on TOC, table, or reference lines.
+    if (
+      isTableOfContentsText(lineText) ||
+      isTableHeadingOrCaption(lineText) ||
+      isTableRowOrData(lineText) ||
+      isTabularVisualLine(line) ||
+      isBibliographyOrReferenceText(lineText) ||
+      isExcludedFromHighlighting(lineText)
+    ) continue;
     if (excludeQuotes && isQuoteText(lineText)) continue;
 
     // Skip very short headings or single numbers
@@ -380,103 +388,78 @@ export function computeHighlightsForPage(
   const highlightedLines = new Map<number, { sourceIndex: number; isBlue: boolean; showBadge: boolean }>();
 
   if (snippetMatchedLineIndices.size > 0) {
-    // Use the matched snippets
+    const totalEligibleLines = eligibleLineIndices.length;
+    const targetLineCount = isSimilarity
+      ? Math.max(1, Math.min(totalEligibleLines, Math.round((plagScore / 100) * totalEligibleLines)))
+      : aiScore > 20
+        ? Math.max(1, Math.min(totalEligibleLines, Math.round((aiScore / 100) * totalEligibleLines)))
+        : 0;
+
     const sortedIdxs = Array.from(snippetMatchedLineIndices.keys()).sort((a, b) => a - b);
-    for (let i = 0; i < sortedIdxs.length; i++) {
+    let selected = 0;
+    for (let i = 0; i < sortedIdxs.length && targetLineCount > 0; i++) {
+      if (selected >= targetLineCount) break;
       const lineIdx = sortedIdxs[i];
       const match = snippetMatchedLineIndices.get(lineIdx)!;
       const isFirstOfGroup = i === 0 || sortedIdxs[i - 1] !== lineIdx - 1;
       highlightedLines.set(lineIdx, {
         sourceIndex: match.sourceIndex,
         isBlue: match.sourceIndex === 2,
-        showBadge: isSimilarity && isFirstOfGroup, // show badge at START (left) of contiguous group
+        showBadge: isSimilarity && isFirstOfGroup,
       });
+      selected++;
     }
   } else {
-    // Proportional authentic allocation matching Turnitin document statistics
+    // Proportional authentic allocation matching the exact reported percentage.
+    const exactPercentTarget = (score: number, total: number) => {
+      if (!Number.isFinite(score) || score <= 0 || total <= 0) return 0;
+      return Math.max(1, Math.min(total, Math.round((score / 100) * total)));
+    };
+
+    const getLineSelectionIndexes = (total: number, targetCount: number): number[] => {
+      if (!Number.isFinite(targetCount) || targetCount <= 0 || total <= 0) return [];
+      const safeTarget = Math.min(total, Math.max(1, Math.round(targetCount)));
+      const indices = new Set<number>();
+
+      for (let i = 0; i < safeTarget; i++) {
+        const pos = Math.min(
+          total - 1,
+          Math.max(0, Math.round(((i + 0.5) * total) / safeTarget))
+        );
+        indices.add(pos);
+      }
+
+      return Array.from(indices).sort((a, b) => a - b);
+    };
+
     if (isSimilarity) {
-      // Plagiarism: 1% to 17%
-      const targetCount = Math.max(
-        1,
-        Math.min(
-          eligibleLineIndices.length,
-          Math.round((plagScore / 100) * eligibleLineIndices.length * 1.5)
-        )
-      );
-
-      // Select cluster start points deterministically per pageIndex
-      const seed = (pageIndex * 7 + 3) % eligibleLineIndices.length;
-      const step = Math.max(2, Math.floor(eligibleLineIndices.length / Math.max(1, Math.ceil(targetCount / 2))));
-
-      let assigned = 0;
+      const targetCount = exactPercentTarget(plagScore, eligibleLineIndices.length);
+      const selectedLines = getLineSelectionIndexes(eligibleLineIndices.length, targetCount);
       let clusterColorIndex = (pageIndex % 4) + 1;
 
-      for (let i = 0; i < eligibleLineIndices.length && assigned < targetCount; i += step) {
-        const actualIdx = (i + seed) % eligibleLineIndices.length;
-        const lineIdx = eligibleLineIndices[actualIdx];
-
+      for (const pos of selectedLines) {
+        const lineIdx = eligibleLineIndices[pos];
         const srcIdx = clusterColorIndex;
         clusterColorIndex = (clusterColorIndex % 4) + 1;
 
-        // Highlight 1 or 2 lines in this cluster: badge on the FIRST line (start / left)
         highlightedLines.set(lineIdx, {
           sourceIndex: srcIdx,
           isBlue: srcIdx === 2,
-          showBadge: true, // badge at start of cluster on the left side
+          showBadge: true,
         });
-        assigned++;
-
-        // Contiguous line if available
-        const nextEligiblePos = actualIdx + 1;
-        if (assigned < targetCount && nextEligiblePos < eligibleLineIndices.length) {
-          const nextLineIdx = eligibleLineIndices[nextEligiblePos];
-          if (nextLineIdx === lineIdx + 1) {
-            highlightedLines.set(nextLineIdx, {
-              sourceIndex: srcIdx,
-              isBlue: srcIdx === 2,
-              showBadge: false, // continuation line has no badge
-            });
-            assigned++;
-            continue;
-          }
-        }
       }
     } else {
-      // AI Detection (mode === 'ai'):
-      // ai 21-70%: ~15% light blue highlights
-      // ai >70%: proportional to aiScore
-      const ratio = aiScore <= 70 ? 0.15 : aiScore / 100;
-      const targetCount = Math.max(
-        1,
-        Math.min(eligibleLineIndices.length, Math.round(ratio * eligibleLineIndices.length))
-      );
+      const targetCount = aiScore > 20 ? exactPercentTarget(aiScore, eligibleLineIndices.length) : 0;
+      if (targetCount > 0) {
+        const selectedLines = getLineSelectionIndexes(eligibleLineIndices.length, targetCount);
 
-      const seed = (pageIndex * 11 + 5) % eligibleLineIndices.length;
-      const step = Math.max(2, Math.floor(eligibleLineIndices.length / Math.max(1, Math.ceil(targetCount / 2))));
-
-      let assigned = 0;
-      for (let i = 0; i < eligibleLineIndices.length && assigned < targetCount; i += step) {
-        const actualIdx = (i + seed) % eligibleLineIndices.length;
-        const lineIdx = eligibleLineIndices[actualIdx];
-
-        highlightedLines.set(lineIdx, {
-          sourceIndex: 1,
-          isBlue: true,
-          showBadge: false, // Turnitin AI mode does not use numbered badges
-        });
-        assigned++;
-
-        const nextEligiblePos = actualIdx + 1;
-        if (assigned < targetCount && nextEligiblePos < eligibleLineIndices.length) {
-          const nextLineIdx = eligibleLineIndices[nextEligiblePos];
-          if (nextLineIdx === lineIdx + 1) {
-            highlightedLines.set(nextLineIdx, {
-              sourceIndex: 1,
-              isBlue: true,
-              showBadge: false,
-            });
-            assigned++;
-          }
+        for (const pos of selectedLines) {
+          const lineIdx = eligibleLineIndices[pos];
+          highlightedLines.set(lineIdx, {
+            sourceIndex: 1,
+            isBlue: true,
+            showBadge: false,
+          });
         }
       }
     }

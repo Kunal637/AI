@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx server.ts",
     "build": "vite build",
-    "start": "node server.ts",
+    "start": "node server.ts --serve-dist",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "verify:pdf": "tsx scripts/verify-pdf-merge.ts",

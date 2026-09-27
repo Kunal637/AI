@@ -23,7 +23,7 @@ async function startServer() {
         return res.status(400).json({ success: false, error: "Missing docxBase64 payload" });
       }
 
-      const result = await convertDocxToPdf(docxBase64);
+      const result = await convertDocxToPdf(docxBase64, fileName);
       if (!result.success || !result.pdfBase64) {
         return res.status(500).json({ success: false, error: result.error || "Conversion failed" });
       }
@@ -40,10 +40,10 @@ async function startServer() {
     }
   });
 
-  // Reliable production detection (Cloud Run sets PORT, dist exists after build)
+  // Dev must use Vite even when a previous production build left dist/ behind.
   const distPath = path.join(process.cwd(), "dist");
   const hasDist = fs.existsSync(path.join(distPath, "index.html"));
-  const isProduction = process.env.NODE_ENV === "production" || hasDist;
+  const isProduction = process.env.NODE_ENV === "production" || process.argv.includes("--serve-dist");
 
   if (isProduction && hasDist) {
     app.use(express.static(distPath));

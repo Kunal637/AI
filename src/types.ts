@@ -61,6 +61,8 @@ export interface ManuscriptContentPage {
 
 export interface ScanReport {
   id: string;
+  userId?: string;
+  expiresAt?: number;
   title: string;
   fileName: string;
   fileSize: string;
@@ -102,6 +104,7 @@ export interface ScanReport {
   integrityFlagsCount?: number;
   manuscriptPages?: ManuscriptContentPage[];
   fileData?: string;
+  storagePath?: string;
   fileMimeType?: string;
   htmlContent?: string;
   htmlPages?: string[];

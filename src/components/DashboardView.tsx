@@ -47,6 +47,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onOpenReport }) =>
   const [pasteMode, setPasteMode] = useState(false);
   const [pastedText, setPastedText] = useState('');
   const [inputTitle, setInputTitle] = useState('');
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [isPreparingFile, setIsPreparingFile] = useState(false);
+  const [preparingFileName, setPreparingFileName] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const modeCosts: Record<ScanMode, number> = {
@@ -64,8 +67,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onOpenReport }) =>
     const file = files[0];
     const sizeInMB = (file.size / (1024 * 1024)).toFixed(1);
 
+    setUploadError(null);
+    setIsPreparingFile(true);
+    setPreparingFileName(file.name);
+
     try {
       const docData = await extractDocumentDataFromFile(file);
+      setUploadError(null);
       setUploadedFile({
         name: file.name,
         size: `${sizeInMB} MB`,
@@ -73,10 +81,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onOpenReport }) =>
       });
     } catch (err) {
       console.error('File parsing error:', err);
-      setUploadedFile({
-        name: file.name,
-        size: `${sizeInMB} MB`,
-      });
+      setUploadedFile(null);
+      setUploadError(err instanceof Error ? err.message : 'Unable to read this document. Please upload a valid DOCX, PDF, or TXT file.');
+    } finally {
+      setIsPreparingFile(false);
+      setPreparingFileName('');
     }
   };
 
@@ -104,11 +113,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onOpenReport }) =>
     let fileName = uploadedFile ? uploadedFile.name : (inputTitle.trim() || 'Untitled_Document.docx');
     let content = uploadedFile?.docData?.text || pastedText;
 
-    if (!uploadedFile && !pastedText) {
-      // Auto-sample if nothing entered for rapid testing
-      fileName = 'Sample_Academic_Manuscript_2026.docx';
-      content = 'The rapid proliferation of large language models poses unique attribution challenges in scientific literature. Our empirical benchmarks demonstrate that syntactic perplexity shifts provide decisive signals during originality audits.';
+    if (!uploadedFile?.docData?.text && !pastedText) {
+      setUploadError('Please upload a readable document before starting the analysis.');
+      return;
     }
+
+    if (isPreparingFile) return;
+
+    // Clear the upload card immediately so the submitted filename does not remain visible while scanning.
+    setUploadedFile(null);
+    setPastedText('');
+    setUploadError(null);
 
     await runScan({
       fileName,
@@ -125,9 +140,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onOpenReport }) =>
       pageCount: uploadedFile?.docData?.pageCount,
     });
 
-    // Reset file form
-    setUploadedFile(null);
-    setPastedText('');
   };
 
   return (
@@ -187,7 +199,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onOpenReport }) =>
       </div>
 
       {/* Main Upload / Configuration Card */}
-      <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-sm space-y-5" id="upload-panel-card">
+      <div className="overflow-visible rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm sm:p-6" id="upload-panel-card">
         {/* Author Name Section */}
         <div>
           <label className="block text-xs font-semibold text-slate-600 mb-2">
@@ -287,7 +299,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onOpenReport }) =>
             onDragOver={handleDrag}
             onDrop={handleDrop}
             onClick={() => fileInputRef.current?.click()}
-            className={`border-2 border-dashed rounded-2xl p-10 text-center cursor-pointer transition flex flex-col items-center justify-center min-h-[190px] ${
+            className={`min-h-[220px] overflow-hidden rounded-[2rem] border-2 border-dashed p-5 text-center cursor-pointer transition flex flex-col items-center justify-center sm:p-10 ${
               dragActive
                 ? 'border-indigo-500 bg-indigo-50/40'
                 : 'border-slate-200/90 bg-slate-50/30 hover:border-indigo-400 hover:bg-slate-50'
@@ -302,7 +314,27 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onOpenReport }) =>
               onChange={e => handleFiles(e.target.files)}
             />
 
-            {uploadedFile ? (
+            {isPreparingFile ? (
+              <div className="flex w-full max-w-lg flex-col items-center gap-3 rounded-[2rem] border border-indigo-100 bg-gradient-to-b from-indigo-50/70 to-white px-4 py-5 sm:px-8">
+                <div className="relative flex h-14 w-14 items-center justify-center rounded-full bg-white shadow-sm ring-1 ring-indigo-100">
+                  <div className="absolute inset-0 animate-spin rounded-full border-2 border-transparent border-t-indigo-600" />
+                  <FileUp className="h-6 w-6 text-indigo-600" strokeWidth={2.2} />
+                </div>
+                <div className="text-center">
+                  <div className="text-sm font-bold text-slate-900">Preparing your document</div>
+                  <div className="mt-1 max-w-full truncate text-xs text-slate-500" title={preparingFileName}>{preparingFileName}</div>
+                </div>
+                <div className="w-full max-w-sm space-y-2">
+                  <div className="h-2 overflow-hidden rounded-full bg-indigo-100/80">
+                    <div className="h-full w-2/3 animate-pulse rounded-full bg-gradient-to-r from-indigo-500 via-blue-500 to-indigo-500" />
+                  </div>
+                  <div className="flex flex-wrap justify-between gap-x-3 gap-y-1 text-[10px] font-medium text-slate-400">
+                    <span>Reading and rendering file</span>
+                    <span className="text-indigo-500">Please wait...</span>
+                  </div>
+                </div>
+              </div>
+            ) : uploadedFile ? (
               <div className="flex flex-col items-center gap-2">
                 <div className="w-14 h-14 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center text-3xl">
                   📄
@@ -360,6 +392,20 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onOpenReport }) =>
           </div>
         )}
 
+        {uploadError && !pasteMode && (
+          <div
+            className="mt-3 flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-left"
+            role="alert"
+            aria-live="polite"
+          >
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-rose-600" />
+            <div className="min-w-0">
+              <p className="text-xs font-bold text-rose-800">Document could not be added</p>
+              <p className="mt-0.5 text-[11px] leading-5 text-rose-700">{uploadError}</p>
+            </div>
+          </div>
+        )}
+
         {/* Warning banner: matches user screenshot */}
         {!hasSufficientCredits && (
           <div
@@ -396,14 +442,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onOpenReport }) =>
         )}
 
         {/* Bottom Actions: Analyze Button */}
-        <div className="flex items-center justify-between pt-2">
-          <div className="text-xs text-slate-400">
-            {uploadedFile ? `Selected: ${uploadedFile.name}` : 'Click Analyze to generate full Turnitin-grade report'}
+        <div className="flex flex-col gap-3 pt-2 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0 truncate text-xs text-slate-400">
+            {isPreparingFile
+              ? `Preparing: ${preparingFileName}`
+              : uploadedFile
+              ? `Selected: ${uploadedFile.name}`
+              : 'Click Analyze to generate full Turnitin-grade report'}
           </div>
 
           <button
             onClick={handleAnalyze}
-            disabled={!hasSufficientCredits || isScanning}
+            disabled={!hasSufficientCredits || isScanning || isPreparingFile || !uploadedFile?.docData?.text}
             className={`flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold text-xs transition-all shadow-md ${
               hasSufficientCredits && !isScanning
                 ? 'bg-gradient-to-r from-[#4f46e5] to-[#6366f1] hover:from-[#4338ca] hover:to-[#4f46e5] text-white shadow-indigo-500/25 cursor-pointer active:scale-98'

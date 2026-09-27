@@ -80,16 +80,16 @@ export const ClientHeader: React.FC<ClientHeaderProps> = ({ title, iconSuffix })
   const recentAlerts = isDismissedManual ? [] : transactions.slice(0, 4);
 
   return (
-    <header className="h-16 border-b border-slate-200/80 bg-white/95 backdrop-blur-md px-4 sm:px-6 flex items-center justify-between sticky top-0 z-20">
+    <header className="border-b border-slate-200/80 bg-white/95 backdrop-blur-md px-3 sm:px-6 py-3 sm:py-0 h-auto sm:h-16 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sticky top-0 z-20">
       {/* Page Title with Emoji */}
-      <div className="flex items-center gap-3">
-        <h1 className="text-xl font-bold text-slate-900 tracking-tight" id="header-page-title">
+      <div className="flex items-center gap-3 min-w-0 px-1 sm:px-0">
+        <h1 className="text-lg sm:text-xl font-bold text-slate-900 tracking-tight truncate" id="header-page-title">
           {title}{iconSuffix ? ` ${iconSuffix}` : ''}
         </h1>
       </div>
 
       {/* Right Controls: Notification Bell, Auth pill, Admin Panel Switcher */}
-      <div className="flex items-center gap-3 sm:gap-4">
+      <div className="flex items-center justify-between sm:justify-end gap-2 sm:gap-4 flex-wrap w-full sm:w-auto">
         {/* Notification Bell with 5s Diminishing Badge */}
         <div className="relative">
           <button
@@ -214,10 +214,10 @@ export const ClientHeader: React.FC<ClientHeaderProps> = ({ title, iconSuffix })
         </div>
 
         {/* User Auth Profile & Sign Out */}
-        <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200/80 rounded-xl p-1 shadow-sm">
+        <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200/80 rounded-xl p-1 shadow-sm min-w-0">
           <button
             onClick={() => setIsProfileModalOpen(true)}
-            className="flex items-center gap-2 px-2 py-0.5 text-xs font-semibold text-slate-800 hover:bg-white rounded-lg transition cursor-pointer group"
+            className="flex items-center gap-2 px-2 py-1 text-xs font-semibold text-slate-800 hover:bg-white rounded-lg transition cursor-pointer group min-w-0"
             id="header-user-badge"
             title="Click to view & edit your academic profile"
           >
@@ -233,7 +233,7 @@ export const ClientHeader: React.FC<ClientHeaderProps> = ({ title, iconSuffix })
                 {currentUser.name ? currentUser.name.charAt(0).toUpperCase() : 'U'}
               </div>
             )}
-            <span className="hidden sm:inline max-w-[120px] truncate font-bold text-slate-900 group-hover:text-indigo-600 transition">
+            <span className="hidden sm:inline max-w-[70px] md:max-w-[120px] truncate font-bold text-slate-900 group-hover:text-indigo-600 transition">
               {currentUser.name}
             </span>
             <UserCog className="w-3.5 h-3.5 text-slate-400 group-hover:text-indigo-600 transition ml-0.5 hidden sm:inline" />
@@ -253,7 +253,7 @@ export const ClientHeader: React.FC<ClientHeaderProps> = ({ title, iconSuffix })
         {currentUser.role === 'admin' && currentUser.email?.toLowerCase() === 'admin@turnitscope.com' && (
           <button
             onClick={() => setActivePanel('admin')}
-            className="flex items-center gap-2 bg-gradient-to-r from-slate-900 to-indigo-950 hover:from-slate-800 hover:to-indigo-900 text-white text-xs font-bold px-3 py-2 rounded-xl shadow-sm transition group shrink-0"
+            className="flex items-center gap-2 bg-gradient-to-r from-slate-900 to-indigo-950 hover:from-slate-800 hover:to-indigo-900 text-white text-[10px] sm:text-xs font-bold px-2.5 sm:px-3 py-2 rounded-xl shadow-sm transition group shrink-0"
             id="header-admin-pill"
             title="Open Admin Control Panel"
           >

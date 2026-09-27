@@ -129,123 +129,132 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ onOpenReport }) => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 text-slate-700">
-                {filteredReports.map(rep => (
-                  <tr key={rep.id} className="hover:bg-slate-50/60 transition group">
-                    <td className="py-3.5 px-5 font-semibold text-slate-900 max-w-xs truncate">
-                      <div className="flex items-center gap-2">
-                        <FileText className="w-4 h-4 text-indigo-500 shrink-0" />
-                        <span className="truncate">{rep.title}</span>
-                      </div>
-                      <div className="text-[10px] text-slate-400 mt-0.5 ml-6">
-                        Author: {rep.author} • {rep.fileSize}
-                      </div>
-                    </td>
-                    <td className="py-3.5 px-4 text-slate-600 whitespace-nowrap">
-                      <span className="px-2 py-0.5 rounded-md bg-slate-100 font-medium text-[11px]">
-                        {rep.type}
-                      </span>
-                    </td>
-                    <td className="py-3.5 px-4 whitespace-nowrap">
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200/60">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-                        {rep.status}
-                      </span>
-                    </td>
-                    <td className="py-3.5 px-4 whitespace-nowrap">
-                      <span
-                        className={`font-bold text-xs ${
-                          rep.plagiarismScore > 20
-                            ? 'text-rose-600'
-                            : rep.plagiarismScore > 10
-                            ? 'text-amber-600'
-                            : 'text-emerald-600'
-                        }`}
-                      >
-                        {rep.type === 'AI Detection' ? '—' : `${rep.plagiarismScore}%`}
-                      </span>
-                    </td>
-                    <td className="py-3.5 px-4 whitespace-nowrap">
-                      <span
-                        className={`font-bold text-xs ${
-                          rep.aiScore > 50
-                            ? 'text-rose-600'
-                            : rep.aiScore > 20
-                            ? 'text-amber-600'
-                            : 'text-emerald-600'
-                        }`}
-                      >
-                        {rep.type === 'Plagiarism Check' ? '—' : `${rep.aiScore}%`}
-                      </span>
-                    </td>
-                    <td className="py-3.5 px-4 text-slate-500 whitespace-nowrap text-[11px]">
-                      Standard Repo
-                    </td>
-                    <td className="py-3.5 px-4 text-slate-400 whitespace-nowrap text-[11px]">
-                      {rep.date}
-                    </td>
-                    <td className="py-3.5 px-4 text-center whitespace-nowrap">
-                      <button
-                        onClick={() => onOpenReport(rep)}
-                        className="text-indigo-600 hover:text-indigo-800 font-bold text-xs hover:underline inline-flex items-center gap-1"
-                      >
-                        <Eye className="w-3.5 h-3.5" />
-                        View
-                      </button>
-                    </td>
-                    <td className="py-3.5 px-5 text-right whitespace-nowrap">
-                      <div className="flex items-center justify-end gap-2 relative">
-                        {/* Download Menu Trigger */}
-                        <div className="relative">
-                          <button
-                            onClick={() =>
-                              setActiveDownloadMenu(
-                                activeDownloadMenu === rep.id ? null : rep.id
-                              )
-                            }
-                            className="p-1.5 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition"
-                            title="Download PDF report options"
-                          >
-                            {downloadingId && downloadingId.startsWith(rep.id) ? (
-                              <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-600" />
-                            ) : (
-                              <Download className="w-3.5 h-3.5" />
-                            )}
-                          </button>
+                {filteredReports.map(rep => {
+                  const canDownloadSimilarity = rep.type === 'Plagiarism Check' || rep.type === 'Both';
+                  const canDownloadAi = rep.type === 'AI Detection' || rep.type === 'Both';
 
-                          {activeDownloadMenu === rep.id && (
-                            <div className="absolute right-0 top-full mt-1 w-56 bg-white rounded-xl shadow-xl border border-slate-200 py-1.5 z-30 text-left text-xs animate-in fade-in duration-150">
-                              <div className="px-3 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100">
-                                Download Official PDF
-                              </div>
-                              <button
-                                onClick={() => handleDownload(rep, 'similarity')}
-                                className="w-full px-3 py-2 text-left hover:bg-rose-50 text-slate-700 hover:text-rose-800 font-medium flex items-center gap-2 transition"
-                              >
-                                <span className="w-2 h-2 rounded-full bg-rose-600" />
-                                <span>Similarity Report (12 Pages)</span>
-                              </button>
-                              <button
-                                onClick={() => handleDownload(rep, 'ai')}
-                                className="w-full px-3 py-2 text-left hover:bg-purple-50 text-slate-700 hover:text-purple-800 font-medium flex items-center gap-2 transition"
-                              >
-                                <Bot className="w-3 h-3 text-purple-600" />
-                                <span>AI Writing Report (9 Pages)</span>
-                              </button>
-                            </div>
-                          )}
+                  return (
+                    <tr key={rep.id} className="hover:bg-slate-50/60 transition group">
+                      <td className="py-3.5 px-5 font-semibold text-slate-900 max-w-xs truncate">
+                        <div className="flex items-center gap-2">
+                          <FileText className="w-4 h-4 text-indigo-500 shrink-0" />
+                          <span className="truncate">{rep.title}</span>
                         </div>
-
-                        <button
-                          onClick={() => deleteReport(rep.id)}
-                          className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"
-                          title="Delete report"
+                        <div className="text-[10px] text-slate-400 mt-0.5 ml-6">
+                          Author: {rep.author} • {rep.fileSize}
+                        </div>
+                      </td>
+                      <td className="py-3.5 px-4 text-slate-600 whitespace-nowrap">
+                        <span className="px-2 py-0.5 rounded-md bg-slate-100 font-medium text-[11px]">
+                          {rep.type}
+                        </span>
+                      </td>
+                      <td className="py-3.5 px-4 whitespace-nowrap">
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200/60">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                          {rep.status}
+                        </span>
+                      </td>
+                      <td className="py-3.5 px-4 whitespace-nowrap">
+                        <span
+                          className={`font-bold text-xs ${
+                            rep.plagiarismScore > 20
+                              ? 'text-rose-600'
+                              : rep.plagiarismScore > 10
+                              ? 'text-amber-600'
+                              : 'text-emerald-600'
+                          }`}
                         >
-                          <Trash2 className="w-3.5 h-3.5" />
+                          {rep.type === 'AI Detection' ? '—' : `${rep.plagiarismScore}%`}
+                        </span>
+                      </td>
+                      <td className="py-3.5 px-4 whitespace-nowrap">
+                        <span
+                          className={`font-bold text-xs ${
+                            rep.aiScore > 50
+                              ? 'text-rose-600'
+                              : rep.aiScore > 20
+                              ? 'text-amber-600'
+                              : 'text-emerald-600'
+                          }`}
+                        >
+                          {rep.type === 'Plagiarism Check' ? '—' : `${rep.aiScore}%`}
+                        </span>
+                      </td>
+                      <td className="py-3.5 px-4 text-slate-500 whitespace-nowrap text-[11px]">
+                        Standard Repo
+                      </td>
+                      <td className="py-3.5 px-4 text-slate-400 whitespace-nowrap text-[11px]">
+                        {rep.date}
+                      </td>
+                      <td className="py-3.5 px-4 text-center whitespace-nowrap">
+                        <button
+                          onClick={() => onOpenReport(rep)}
+                          className="text-indigo-600 hover:text-indigo-800 font-bold text-xs hover:underline inline-flex items-center gap-1"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                          View
                         </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                      <td className="py-3.5 px-5 text-right whitespace-nowrap">
+                        <div className="flex items-center justify-end gap-2 relative">
+                          {/* Download Menu Trigger */}
+                          <div className="relative">
+                            <button
+                              onClick={() =>
+                                setActiveDownloadMenu(
+                                  activeDownloadMenu === rep.id ? null : rep.id
+                                )
+                              }
+                              className="p-1.5 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition"
+                              title="Download PDF report options"
+                            >
+                              {downloadingId && downloadingId.startsWith(rep.id) ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-600" />
+                              ) : (
+                                <Download className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+
+                            {activeDownloadMenu === rep.id && (
+                              <div className="absolute right-0 top-full mt-1 w-56 bg-white rounded-xl shadow-xl border border-slate-200 py-1.5 z-30 text-left text-xs animate-in fade-in duration-150">
+                                <div className="px-3 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100">
+                                  Download Official PDF
+                                </div>
+                                {canDownloadSimilarity && (
+                                  <button
+                                    onClick={() => handleDownload(rep, 'similarity')}
+                                    className="w-full px-3 py-2 text-left hover:bg-rose-50 text-slate-700 hover:text-rose-800 font-medium flex items-center gap-2 transition"
+                                  >
+                                    <span className="w-2 h-2 rounded-full bg-rose-600" />
+                                    <span>Similarity Report (12 Pages)</span>
+                                  </button>
+                                )}
+                                {canDownloadAi && (
+                                  <button
+                                    onClick={() => handleDownload(rep, 'ai')}
+                                    className="w-full px-3 py-2 text-left hover:bg-purple-50 text-slate-700 hover:text-purple-800 font-medium flex items-center gap-2 transition"
+                                  >
+                                    <Bot className="w-3 h-3 text-purple-600" />
+                                    <span>AI Writing Report (9 Pages)</span>
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </div>
+
+                          <button
+                            onClick={() => deleteReport(rep.id)}
+                            className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"
+                            title="Delete report"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

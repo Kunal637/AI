@@ -15,6 +15,8 @@ export interface ExtractedDocumentData {
   wordCount?: number;
 }
 
+const MAX_DOCUMENT_WORDS = 30000;
+
 export function arrayBufferToBase64(buffer: ArrayBuffer): string {
   let binary = '';
   const bytes = new Uint8Array(buffer);
@@ -39,8 +41,23 @@ export async function extractDocumentDataFromFile(file: File): Promise<Extracted
     const base64Data = arrayBufferToBase64(arrayBuffer);
 
     if (fileExt === 'docx' || fileExt === 'doc') {
+      // Reject oversized Word documents before invoking server-side conversion.
+      try {
+        const rawTextRes = await mammoth.extractRawText({ arrayBuffer });
+        const preflightText = cleanText(rawTextRes.value);
+        const preflightWords = preflightText.trim().split(/\s+/).filter(Boolean).length;
+        if (preflightWords > MAX_DOCUMENT_WORDS) {
+          throw new Error(`File exceeds the maximum limit of 30,000 words (detected ${preflightWords.toLocaleString()} words). Please upload a document with 30,000 words or fewer.`);
+        }
+      } catch (preflightErr) {
+        if (preflightErr instanceof Error && preflightErr.message.includes('30,000 words')) {
+          throw preflightErr;
+        }
+      }
+
       let convertedPdfBase64 = '';
       let pdfPageCount = 0;
+      let conversionError = 'DOCX conversion failed. Please make sure LibreOffice is installed and try again.';
 
       // 1. Direct Server-Side Headless LibreOffice Conversion to Real Vector PDF
       try {
@@ -49,18 +66,19 @@ export async function extractDocumentDataFromFile(file: File): Promise<Extracted
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ docxBase64: base64Data, fileName: file.name }),
         });
-        if (res.ok) {
-          const json = await res.json();
-          if (json.success && json.pdfBase64) {
-            convertedPdfBase64 = json.pdfBase64;
-            const pdfDoc = await PDFDocument.load(cleanBase64ToUint8Array(convertedPdfBase64), {
-              ignoreEncryption: true,
-            });
-            pdfPageCount = pdfDoc.getPageCount() || 1;
-          }
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok || !json.success || !json.pdfBase64) {
+          conversionError = json.error || conversionError;
+        } else {
+          convertedPdfBase64 = json.pdfBase64;
+          const pdfDoc = await PDFDocument.load(cleanBase64ToUint8Array(convertedPdfBase64), {
+            ignoreEncryption: true,
+          });
+          pdfPageCount = pdfDoc.getPageCount() || 1;
         }
       } catch (srvErr) {
         console.warn('Server-side LibreOffice conversion notice:', srvErr);
+        conversionError = srvErr instanceof Error ? srvErr.message : conversionError;
       }
 
       // If converted to true vector PDF via LibreOffice, return vector PDF directly!
@@ -100,7 +118,7 @@ export async function extractDocumentDataFromFile(file: File): Promise<Extracted
         }
 
         if (!extractedText || extractedText.length < 30) {
-          extractedText = generateCleanAcademicContent(file.name);
+          throw new Error('No readable text could be extracted from this document. Please upload a document with selectable text or a valid PDF/DOCX file.');
         }
 
         const clean = cleanText(extractedText);
@@ -120,7 +138,10 @@ export async function extractDocumentDataFromFile(file: File): Promise<Extracted
         };
       }
 
-      // Fallback: Client-side mammoth parser if offline or server conversion is unavailable
+      // Do not silently redraw DOCX as a synthetic manuscript when authentic conversion fails.
+      throw new Error(conversionError);
+
+      /*
       const mimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
       let extractedText = '';
       let htmlContent = '';
@@ -162,7 +183,7 @@ export async function extractDocumentDataFromFile(file: File): Promise<Extracted
       }
 
       if (!extractedText || extractedText.length < 30) {
-        extractedText = generateCleanAcademicContent(file.name);
+        throw new Error('No readable text could be extracted from this document. Please upload a document with selectable text or a valid PDF/DOCX file.');
       }
 
       // Split HTML into structured pages (preserving headings, tables, and images intact)
@@ -185,6 +206,7 @@ export async function extractDocumentDataFromFile(file: File): Promise<Extracted
         pageCount: estimatedPages,
         wordCount: words,
       };
+      */
     }
 
     if (fileExt === 'pdf') {
@@ -223,9 +245,9 @@ export async function extractDocumentDataFromFile(file: File): Promise<Extracted
         console.warn('PDF.js text extraction fallback:', pdfJsErr);
       }
 
-      let clean = cleanText(extractedPdfText);
+      const clean = cleanText(extractedPdfText);
       if (!clean || clean.length < 50) {
-        clean = generateCleanAcademicContent(file.name);
+        throw new Error('No readable text could be extracted from this PDF. Please upload a PDF with selectable text or a valid document version.');
       }
 
       const words = clean.trim().split(/\s+/).filter(Boolean).length;
@@ -264,19 +286,13 @@ export async function extractDocumentDataFromFile(file: File): Promise<Extracted
       };
     }
   } catch (globalErr: any) {
-    if (globalErr?.message && globalErr.message.includes('30,000 words')) {
+    console.error('Error in extractDocumentDataFromFile:', globalErr);
+    if (globalErr instanceof Error) {
       throw globalErr;
     }
-    console.error('Error in extractDocumentDataFromFile:', globalErr);
   }
 
-  const fallbackText = generateCleanAcademicContent(file.name);
-  const words = fallbackText.trim().split(/\s+/).filter(Boolean).length;
-  return {
-    text: fallbackText,
-    pageCount: Math.max(1, Math.ceil(words / 320)),
-    wordCount: words,
-  };
+  throw new Error('No readable text could be extracted from this document. Please upload a document with actual content to run the scan.');
 }
 
 /**
@@ -581,7 +597,38 @@ export function isBibliographyOrReferenceText(text: string): boolean {
  */
 export function isExcludedFromHighlighting(text: string): boolean {
   if (!text) return false;
-  return isTableOfContentsText(text) || isTableText(text) || isBibliographyOrReferenceText(text);
+  const trimmed = text.trim();
+  return (
+    isTableOfContentsText(trimmed) ||
+    isTableText(trimmed) ||
+    isBibliographyOrReferenceText(trimmed) ||
+    isCitationLine(trimmed) ||
+    isQuoteText(trimmed) ||
+    (/^\d+\.?\s*(?:Introduction|Methods|Results|Discussion|Conclusion|References|Bibliography|Appendix)\b/i.test(trimmed) && /\d+$/.test(trimmed))
+  );
+}
+
+function getPercentageTargetCount(score: number, totalCandidates: number, minimumCoverage = 0): number {
+  if (!Number.isFinite(score) || score <= 0 || totalCandidates <= 0) return 0;
+  const target = (score / 100) * totalCandidates;
+  const rounded = Math.max(minimumCoverage, Math.min(totalCandidates, Math.round(target)));
+  return rounded;
+}
+
+function getExactCoveragePositions(totalCandidates: number, targetCount: number): number[] {
+  if (!Number.isFinite(targetCount) || targetCount <= 0 || totalCandidates <= 0) return [];
+  const safeTarget = Math.min(totalCandidates, Math.max(1, Math.round(targetCount)));
+  const positions = new Set<number>();
+
+  for (let i = 0; i < safeTarget; i++) {
+    const pos = Math.min(
+      totalCandidates - 1,
+      Math.max(0, Math.round(((i + 0.5) * totalCandidates) / safeTarget))
+    );
+    positions.add(pos);
+  }
+
+  return Array.from(positions).sort((a, b) => a - b);
 }
 
 /**
@@ -613,11 +660,18 @@ export function generateSmartSnippets(
   let inBibSection = false;
   let inTocSection = false;
   let inTableBlock = false;
-  const excludedSentenceIndices = new Set<number>();
   const quoteSentenceIndices = new Set<number>();
 
   for (const para of rawParagraphs) {
     const trimmedPara = para.trim();
+    const paragraphExcluded =
+      isTableOfContentsText(trimmedPara) ||
+      isTableText(trimmedPara) ||
+      isBibliographyOrReferenceText(trimmedPara) ||
+      isCitationLine(trimmedPara);
+
+    if (paragraphExcluded) continue;
+
     if (isBibliographyHeading(trimmedPara) || isBibliographyOrReferenceText(trimmedPara)) {
       inBibSection = true;
     }
@@ -642,9 +696,6 @@ export function generateSmartSnippets(
     for (const s of rawSentences) {
       const trimmed = s.trim();
       if (trimmed.length > 15) {
-        const idx = sentences.length;
-        sentences.push(trimmed);
-
         const isBib =
           inBibSection ||
           isBibliographyHeading(trimmed) ||
@@ -661,9 +712,17 @@ export function generateSmartSnippets(
           isTableRowOrData(trimmed) ||
           isTableText(trimmed);
 
-        if (isBib || isToc || isTable || isExcludedFromHighlighting(trimmed)) {
-          excludedSentenceIndices.add(idx);
+        if (excludeQuotes && isQuoteText(trimmed)) {
+          quoteSentenceIndices.add(sentences.length);
+          continue;
         }
+
+        if (isBib || isToc || isTable || isExcludedFromHighlighting(trimmed)) {
+          continue;
+        }
+
+        const idx = sentences.length;
+        sentences.push(trimmed);
         if (isQuoteText(trimmed)) {
           quoteSentenceIndices.add(idx);
         }
@@ -672,16 +731,7 @@ export function generateSmartSnippets(
   }
 
   if (sentences.length === 0) {
-    sentences.push(
-      'Academic integrity in modern scientific inquiry mandates rigorous provenance and traceable evidence.',
-      'Recent developments in natural language generation present complex challenges for institutional peer review pipelines.',
-      'Our comparative analysis reveals that multi-layered linguistic perplexity provides robust indicators when identifying synthetically generated prose.',
-      'Systematic benchmarking across peer-reviewed archives confirms that transparent citation protocols substantially diminish inadvertent overlap.',
-      'Furthermore, token-level burstiness curves highlight sections with statistically low lexical variability and formulaic transitions.',
-      'Future research must bridge the divide between heuristic detectors and emerging multimodal foundation models.',
-      'Scholarly evaluation requires distinguishing between authentic author contribution and machine-generated syntactical structures.',
-      'Advanced forensic stylometry identifies non-human perplexity spikes across dense theoretical manuscripts.'
-    );
+    return [];
   }
 
   const total = sentences.length;
@@ -691,73 +741,54 @@ export function generateSmartSnippets(
   // Also exclude quotes if excludeQuotes is active.
   const eligibleIndices: number[] = [];
   for (let i = 0; i < total; i++) {
-    if (excludedSentenceIndices.has(i)) continue;
     if (excludeQuotes && quoteSentenceIndices.has(i)) continue;
     eligibleIndices.push(i);
   }
 
-  // AI Highlighting Rule:
-  // 1%–20%: ZERO highlighted text! Highlighting should only appear in AI reports showing 21%–75%.
-  const aiCount = aiScore > 20 ? Math.max(1, Math.min(eligibleIndices.length, Math.round((aiScore / 100) * total))) : 0;
+  // Hard cap: only highlight up to the actual percentage of eligible text.
+  // If similarity is 8%, visible highlight must be roughly 8% of the eligible word pool,
+  // not a whole page of sentence blocks.
+  const eligibleEntries = eligibleIndices.map(index => ({
+    index,
+    text: sentences[index],
+    wordCount: sentences[index].split(/\s+/).filter(Boolean).length,
+  }));
 
-  // Plagiarism Rule: similarity percentage strictly between 1% and 17%
-  const plagCount =
-    clampedPlagScore > 0
-      ? Math.max(1, Math.min(eligibleIndices.length, Math.round((clampedPlagScore / 100) * total)))
-      : 0;
+  const eligibleWordCount = eligibleEntries.reduce((sum, entry) => sum + entry.wordCount, 0);
+  const plagiarismTargetWords = clampedPlagScore > 0 && eligibleWordCount > 0
+    ? Math.max(1, Math.round((clampedPlagScore / 100) * eligibleWordCount))
+    : 0;
 
-  // Select which eligible sentence indices to highlight for plagiarism
+  const aiTargetWords = aiScore > 20 && eligibleWordCount > 0
+    ? Math.max(1, Math.round((aiScore / 100) * eligibleWordCount))
+    : 0;
+
   const plagIndices = new Set<number>();
-  if (plagCount > 0 && eligibleIndices.length > 0) {
-    let assigned = 0;
-    const step = Math.max(1, Math.floor(eligibleIndices.length / plagCount));
-    for (let i = 0; i < eligibleIndices.length && assigned < plagCount; i += step) {
-      const targetIdx = eligibleIndices[i];
-      plagIndices.add(targetIdx);
-      assigned++;
-
-      // Group adjacent eligible sentences to form natural complete paragraph highlights
-      if (assigned < plagCount && i + 1 < eligibleIndices.length && (clampedPlagScore > 10 || Math.random() > 0.4)) {
-        plagIndices.add(eligibleIndices[i + 1]);
-        assigned++;
-      }
-    }
-    // Fill remaining from eligible pool if needed
-    for (let i = 0; i < eligibleIndices.length && assigned < plagCount; i++) {
-      const targetIdx = eligibleIndices[i];
-      if (!plagIndices.has(targetIdx)) {
-        plagIndices.add(targetIdx);
-        assigned++;
+  let usedWords = 0;
+  if (plagiarismTargetWords > 0 && eligibleEntries.length > 0) {
+    const sorted = [...eligibleEntries].sort((a, b) => b.wordCount - a.wordCount);
+    for (const entry of sorted) {
+      if (usedWords >= plagiarismTargetWords) break;
+      const maxSentenceWords = Math.max(2, Math.min(entry.wordCount, Math.ceil(entry.wordCount * 0.25)));
+      const addWords = Math.min(maxSentenceWords, plagiarismTargetWords - usedWords);
+      if (addWords > 0) {
+        plagIndices.add(entry.index);
+        usedWords += addWords;
       }
     }
   }
 
-  // Select which sentence indices to highlight for AI (only when aiScore > 20)
   const aiIndices = new Set<number>();
-  if (aiCount > 0 && eligibleIndices.length > 0) {
-    let assigned = 0;
-    const step = Math.max(1, Math.floor(eligibleIndices.length / aiCount));
-    for (let i = 0; i < eligibleIndices.length && assigned < aiCount; i++) {
-      const targetIdx = eligibleIndices[i];
-      if (i % step === 0 || (aiScore > 40 && i % 2 === 0)) {
-        if (!plagIndices.has(targetIdx) && !aiIndices.has(targetIdx)) {
-          aiIndices.add(targetIdx);
-          assigned++;
-          if (assigned < aiCount && i + 1 < eligibleIndices.length) {
-            const nextTargetIdx = eligibleIndices[i + 1];
-            if (!plagIndices.has(nextTargetIdx)) {
-              aiIndices.add(nextTargetIdx);
-              assigned++;
-            }
-          }
-        }
-      }
-    }
-    for (let i = 0; i < eligibleIndices.length && assigned < aiCount; i++) {
-      const targetIdx = eligibleIndices[i];
-      if (!plagIndices.has(targetIdx) && !aiIndices.has(targetIdx)) {
-        aiIndices.add(targetIdx);
-        assigned++;
+  let usedAiWords = 0;
+  if (aiTargetWords > 0 && eligibleEntries.length > 0) {
+    const sorted = [...eligibleEntries].filter(entry => !plagIndices.has(entry.index)).sort((a, b) => b.wordCount - a.wordCount);
+    for (const entry of sorted) {
+      if (usedAiWords >= aiTargetWords) break;
+      const maxSentenceWords = Math.max(2, Math.min(entry.wordCount, Math.ceil(entry.wordCount * 0.25)));
+      const addWords = Math.min(maxSentenceWords, aiTargetWords - usedAiWords);
+      if (addWords > 0) {
+        aiIndices.add(entry.index);
+        usedAiWords += addWords;
       }
     }
   }
@@ -766,7 +797,7 @@ export function generateSmartSnippets(
   let plagCounter = 0;
   return sentences.map((sentence, index) => {
     // Unconditional rule: Table of Contents, Tables, and References are strictly normal text
-    if (excludedSentenceIndices.has(index) || isExcludedFromHighlighting(sentence)) {
+    if (isExcludedFromHighlighting(sentence)) {
       return {
         text: sentence,
         type: 'normal' as const,

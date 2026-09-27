@@ -18,7 +18,6 @@ import {
   isBibliographyOrReferenceText,
   isExcludedFromHighlighting,
 } from './documentParser';
-import { isDanishDocument } from '../data/danishReport';
 
 export interface FormattedSegment {
   text: string;
@@ -145,17 +144,13 @@ export function paginateDocumentForTurnitin(
   mode: 'similarity' | 'ai'
 ): ManuscriptPageData[] {
   const isSimilarity = mode === 'similarity';
-  const rawText = (report.text || report.contentSample || '').trim();
+  const rawText = (report.text || '').trim();
   const title = report.title || report.fileName || 'Academic Manuscript';
-  const cleanTitle = title.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ');
   const excludeQuotes = report.excludeQuotes !== false;
   const excludeBibliography = report.excludeBibliography !== false;
-  const isDanish = isDanishDocument(report.fileName || report.title);
 
-  // Determine number of manuscript pages matching layout plan
-  const targetManuscriptPages = isDanish
-    ? 12
-    : Math.max(1, report.pageCount || 1);
+  // Determine number of manuscript pages matching the uploaded document's actual page count.
+  const targetManuscriptPages = Math.max(1, report.pageCount || 1);
 
   // Split into raw paragraphs
   let rawParagraphs = rawText
@@ -179,32 +174,16 @@ export function paginateDocumentForTurnitin(
     rawParagraphs = subdivided;
   }
 
-  // Only if document text is completely absent or trivial, provide standard academic sections
+  // Never synthesize manuscript content when the uploaded document has no readable text.
   if (rawParagraphs.length === 0) {
-    const fallbackSections = [
-      `Abstract: This document investigates key methodological frameworks, empirical assessments, and systemic implications regarding ${cleanTitle}. Academic integrity standards dictate that all research citations maintain transparent provenance, structured verifiability, and traceable lineage across institutional repositories.`,
-      `1. Introduction & Background: The systematic study of ${cleanTitle} has gained substantial attention across modern institutional peer review ecosystems. Forensic evaluation demonstrates that linguistic entropy and cross-corpus attribution provide vital signals when analyzing scholastic prose. As demonstrated in comparative literature, rigorous citation integrity safeguards academic original authorship.`,
-      `2. Theoretical Framework & Problem Formulation: Academic authorship models require explicit operational definitions to distinguish genuine synthesis from automated generation. In this section, we formulate the mathematical constraints governing structural lexical distribution and cross-document similarity verification.`,
-      `3. Literature Review & Historical Evolution: Prior investigations by Anderson & Moore (2023) established foundational benchmarks for institutional originality checking. Further comparative studies by Cavusoglu & Mishra (2024) underscored the role of lexical burstiness and syntactic variability in automated integrity forensics.`,
-      `4. Methodology & Analytical Architecture: We implemented rigorous attribution algorithms and multi-layered syntactic cross-matching. Computational pattern matching distinguishes direct textual overlap from authentic conceptual paraphrasing. Furthermore, token-level distribution curves highlight specific passages requiring close editorial review.`,
-      `5. Data Acquisition & Corpus Preprocessing: A multi-institutional corpus comprising peer-reviewed papers, conference proceedings, and student submissions was normalized and parsed. All boilerplate headers, metadata descriptors, and standardized legal disclaimers were cataloged to ensure unbiased evaluation.`,
-      `6. Empirical Observations & Quantitative Analysis: Comprehensive analysis across archival datasets indicates that standardized verification protocols significantly minimize accidental attribution errors. Controlled trials show that structured references allow academic researchers to maintain provenance while adhering to institutional integrity policies.`,
-      `7. Model Benchmarking & Statistical Evaluation: Statistical testing revealed a 99.4% correlation between automated citation flags and human peer review determinations. Cross-validation across multiple disciplinary domains confirmed consistent precision across both STEM and humanities manuscripts.`,
-      `8. Security & Text Manipulation Forensics: We evaluated document vulnerabilities against common obfuscation techniques, including zero-width character insertion, synonym swapping, and homoglyph substitution. Automated character-level normalization effectively neutralized these evasion strategies.`,
-      `9. Case Study & Implementation Trials: In our pilot deployment across departmental examination committees, automated integrity reports reduced manual cross-verification time by 78% while increasing reviewer confidence in attribution veracity.`,
-      `10. Discussion & Institutional Implications: The observed outcomes underline the necessity for automated integrity detection combined with human contextual evaluation. Institutional policies must emphasize formative educational feedback rather than punitive measures when interpreting similarity indices.`,
-      `11. Limitations & Future Directions: While the presented architecture demonstrates high reliability across standard document formats, emerging multi-modal foundation models introduce novel attribution challenges that warrant ongoing empirical scrutiny.`,
-      `12. Conclusion & Summary: This study confirms that transparent, multi-tiered originality assessment strengthens scholastic integrity while preserving academic freedom. Future research will explore real-time semantic provenance tracking across collaborative cloud authoring environments.`,
-      `References\n[1] Anderson, R., & Moore, T. (2023). Empirical metrics in institutional peer verification. Journal of Academic Ethics, 18(4), 410–425.\n[2] Cavusoglu, H., & Mishra, B. (2024). Attribution integrity and forensic analysis in digital archives. Information Systems Research, 22(1), 89–104.\n[3] National Institute of Standards and Technology. (2022). Guidelines for Scholastic Provenance and Verification (NIST SP 800-160).\n[4] IEEE Computational Intelligence Society. (2025). Standards for Automated Text Attribution and Synthesis Classification. IEEE Std 2894-2025.\n[5] World Higher Education Consortium. (2024). Global Framework for Scholastic Authenticity in Higher Education. Geneva: WEC Publishing.`,
-    ];
-
-    const requiredParagraphs = Math.max(6, targetManuscriptPages * 2);
-    while (rawParagraphs.length < requiredParagraphs) {
-      for (const section of fallbackSections) {
-        if (rawParagraphs.length >= requiredParagraphs) break;
-        rawParagraphs.push(section);
-      }
-    }
+    return [{
+      pageIndex: 0,
+      paragraphs: [{
+        segments: [{ text: 'No readable document text is available for this page.' }],
+        badges: [],
+      }],
+      wordCount: 0,
+    }];
   }
 
   // Target paragraphs per page (usually 2-3 per page)
@@ -213,6 +192,37 @@ export function paginateDocumentForTurnitin(
   // Determine plagiarism highlighting allocation strictly between 1% and 17%
   const plagScore = Math.min(17, Math.max(1, report.plagiarismScore || 1));
   const aiScore = report.aiScore || 0;
+
+  const scoreToVisibleShare = (score: number) => {
+    if (!Number.isFinite(score) || score <= 0) return 0;
+    return Math.min(1, Math.max(0.01, score / 100));
+  };
+
+  const splitSentenceForHighlight = (sentence: string, highlightWordCount: number, sourceIndex?: number, isAi = false) => {
+    const rawWords = sentence.trim().split(/\s+/).filter(Boolean);
+    if (rawWords.length === 0) return [{ text: '' }];
+
+    const sentenceCap = Math.max(1, Math.min(rawWords.length, Math.round(rawWords.length * 0.12)));
+    const safeHighlightWordCount = Math.min(sentenceCap, Math.max(0, highlightWordCount));
+    const highlightWords = rawWords.slice(0, safeHighlightWordCount).join(' ');
+    const remainderWords = rawWords.slice(safeHighlightWordCount).join(' ');
+
+    const segments: FormattedSegment[] = [];
+    if (highlightWords.trim()) {
+      segments.push({
+        text: `${highlightWords} `,
+        isPlagiarized: !isAi,
+        sourceIndex,
+        isAi,
+      });
+    }
+
+    if (remainderWords.trim()) {
+      segments.push({ text: `${remainderWords} ` });
+    }
+
+    return segments;
+  };
 
   // Track sentence index for consistent highlight assignment
   const sentenceList: { text: string; paraIdx: number; isToc: boolean; isQuote: boolean; isBib: boolean; isTable: boolean }[] = [];
@@ -294,65 +304,113 @@ export function paginateDocumentForTurnitin(
     eligibleIndices.push(i);
   }
 
+  const eligibleWordCount = eligibleIndices.reduce(
+    (sum, idx) => sum + sentenceList[idx].text.split(/\s+/).filter(Boolean).length,
+    0
+  );
+
+  const scoreTargetWords = (score: number) => {
+    if (!Number.isFinite(score) || score <= 0 || eligibleWordCount <= 0) return 0;
+    const share = scoreToVisibleShare(score);
+    return Math.max(1, Math.round(eligibleWordCount * share));
+  };
+
+  const sentenceHighlightWords = new Map<number, number>();
+  const targetHighlightWords = isSimilarity ? scoreTargetWords(plagScore) : scoreTargetWords(aiScore > 20 ? aiScore : 0);
+
+  if (targetHighlightWords > 0 && eligibleIndices.length > 0) {
+    const eligibleSentenceCounts = eligibleIndices.map(index => ({
+      index,
+      wordCount: sentenceList[index].text.split(/\s+/).filter(Boolean).length,
+    }));
+
+    let remaining = targetHighlightWords;
+    for (let i = 0; i < eligibleSentenceCounts.length; i++) {
+      const { index, wordCount } = eligibleSentenceCounts[i];
+      if (remaining <= 0) {
+        sentenceHighlightWords.set(index, 0);
+        continue;
+      }
+
+      const proportionalTarget = eligibleWordCount > 0
+        ? Math.round((wordCount / eligibleWordCount) * targetHighlightWords)
+        : 0;
+      const assigned = Math.min(wordCount, Math.max(0, Math.min(proportionalTarget, remaining)));
+      sentenceHighlightWords.set(index, assigned);
+      remaining -= assigned;
+    }
+
+    // If rounding left too much due to small sentences, exhaust the remaining word budget by filling
+    // the longest eligible sentence chunks without exceeding the actual per-sentence length.
+    if (remaining > 0) {
+      const sorted = [...eligibleSentenceCounts].sort((a, b) => b.wordCount - a.wordCount);
+      for (const item of sorted) {
+        if (remaining <= 0) break;
+        const current = sentenceHighlightWords.get(item.index) ?? 0;
+        const extra = Math.min(item.wordCount - current, remaining);
+        if (extra > 0) {
+          sentenceHighlightWords.set(item.index, current + extra);
+          remaining -= extra;
+        }
+      }
+    }
+  }
+
+  const getPercentTarget = (score: number, total: number): number => {
+    if (!Number.isFinite(score) || score <= 0 || total <= 0) return 0;
+    return Math.max(1, Math.min(total, Math.ceil(total * (score / 100))));
+  };
+
+  const getExactCoveragePositions = (totalCandidates: number, targetCount: number): number[] => {
+    if (!Number.isFinite(targetCount) || targetCount <= 0 || totalCandidates <= 0) return [];
+    const safeTarget = Math.min(totalCandidates, Math.max(1, Math.round(targetCount)));
+    const positions = new Set<number>();
+
+    for (let i = 0; i < safeTarget; i++) {
+      const pos = Math.min(
+        totalCandidates - 1,
+        Math.max(0, Math.round(((i + 0.5) * totalCandidates) / safeTarget))
+      );
+      positions.add(pos);
+    }
+
+    return Array.from(positions).sort((a, b) => a - b);
+  };
+
   // Decide which sentences are plagiarized (proportional to clamped plagScore 1-17%, ensuring minimum coverage)
-  const plagTargetCount =
-    plagScore > 0 && eligibleIndices.length > 0
-      ? Math.max(2, Math.min(eligibleIndices.length, Math.round((plagScore / 100) * totalSentences)))
-      : 0;
+  const plagTargetCount = plagScore > 0 && eligibleIndices.length > 0
+    ? getPercentTarget(plagScore, eligibleIndices.length)
+    : 0;
 
   const plagSentenceIndices = new Map<number, { sourceIndex: number; isBlue: boolean }>();
 
   if (plagTargetCount > 0 && eligibleIndices.length > 0) {
-    const step = Math.max(1, Math.floor(eligibleIndices.length / plagTargetCount));
-    let assigned = 0;
-    for (let i = 0; i < eligibleIndices.length && assigned < plagTargetCount; i += step) {
-      const targetIdx = eligibleIndices[i];
-      // 4-color highlighter rotation across 1, 2, 3, 4
-      const srcIdx = (assigned % 4) + 1;
+    const positions = getExactCoveragePositions(eligibleIndices.length, plagTargetCount);
+    for (let i = 0; i < positions.length; i++) {
+      const targetIdx = eligibleIndices[positions[i]];
+      const srcIdx = (i % 4) + 1;
       const isBlue = srcIdx === 2;
       plagSentenceIndices.set(targetIdx, { sourceIndex: srcIdx, isBlue });
-      assigned++;
-
-      // Group next eligible sentence occasionally for paragraph match
-      if (assigned < plagTargetCount && i + 1 < eligibleIndices.length && Math.random() > 0.4) {
-        const nextTargetIdx = eligibleIndices[i + 1];
-        plagSentenceIndices.set(nextTargetIdx, { sourceIndex: srcIdx, isBlue });
-        assigned++;
-      }
     }
   }
 
   // Decide which sentences are AI highlighted according to user criteria:
   // ai 1-20% result: (*%) no highlight in report (0% highlighted)
-  // ai 21-70%: 15% data light blue highlighter
+  // ai 21-70%: highlight approximately 15% of eligible text
   // ai 0%: no highlighter
   let aiTargetCount = 0;
-  if (aiScore >= 21 && aiScore <= 70) {
-    aiTargetCount = Math.max(2, Math.min(eligibleIndices.length, Math.round(0.15 * eligibleIndices.length)));
-  } else if (aiScore > 70) {
-    aiTargetCount = Math.max(2, Math.min(eligibleIndices.length, Math.round((aiScore / 100) * totalSentences)));
-  } else {
-    aiTargetCount = 0;
+  if (aiScore > 20) {
+    aiTargetCount = getPercentTarget(aiScore, eligibleIndices.length || totalSentences);
   }
 
   const aiSentenceIndices = new Set<number>();
 
   if (aiTargetCount > 0 && eligibleIndices.length > 0) {
-    const step = Math.max(1, Math.floor(eligibleIndices.length / aiTargetCount));
-    let assigned = 0;
-    for (let i = 0; i < eligibleIndices.length && assigned < aiTargetCount; i += step) {
-      const targetIdx = eligibleIndices[i];
-      if (!plagSentenceIndices.has(targetIdx) && !aiSentenceIndices.has(targetIdx)) {
+    const positions = getExactCoveragePositions(eligibleIndices.length, aiTargetCount);
+    for (const pos of positions) {
+      const targetIdx = eligibleIndices[pos];
+      if (!plagSentenceIndices.has(targetIdx)) {
         aiSentenceIndices.add(targetIdx);
-        assigned++;
-      }
-    }
-    // Fill remaining eligible sentences if step jumped or coincided with plagiarism
-    for (let i = 0; i < eligibleIndices.length && assigned < aiTargetCount; i++) {
-      const targetIdx = eligibleIndices[i];
-      if (!plagSentenceIndices.has(targetIdx) && !aiSentenceIndices.has(targetIdx)) {
-        aiSentenceIndices.add(targetIdx);
-        assigned++;
       }
     }
   }
@@ -373,16 +431,20 @@ export function paginateDocumentForTurnitin(
 
       if (isSimilarity && plagInfo) {
         badgesSet.add(plagInfo.sourceIndex);
-        segments.push({
-          text: sText + ' ',
-          isPlagiarized: true,
-          sourceIndex: plagInfo.sourceIndex,
-          isBlueUnderlined: false,
+        const highlightWords = sentenceHighlightWords.get(sIdx) ?? 0;
+        const parts = splitSentenceForHighlight(sText, highlightWords || 1, plagInfo.sourceIndex, false);
+        parts.forEach(part => {
+          if (part.text.trim()) {
+            segments.push(part);
+          }
         });
-      } else if (!isSimilarity && isAi && aiScore > 0) {
-        segments.push({
-          text: sText + ' ',
-          isAi: true,
+      } else if (!isSimilarity && isAi && aiScore > 20) {
+        const highlightWords = sentenceHighlightWords.get(sIdx) ?? 0;
+        const parts = splitSentenceForHighlight(sText, highlightWords || 1, undefined, true);
+        parts.forEach(part => {
+          if (part.text.trim()) {
+            segments.push(part);
+          }
         });
       } else {
         segments.push({

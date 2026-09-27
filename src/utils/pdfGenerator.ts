@@ -3,9 +3,6 @@ import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import * as pdfjsLib from 'pdfjs-dist';
 import { ScanReport } from '../types';
 import { getReportPageLayout, getReportPdfFileName } from './reportPageLayout';
-import { isCyb2103Document } from '../data/cyb2103Report';
-import { isKunalReport } from '../data/kunalReport';
-import { isDanishDocument } from '../data/danishReport';
 import { paginateDocumentForTurnitin } from './dynamicManuscriptEngine';
 import {
   computeHighlightsForPage,
@@ -1804,7 +1801,8 @@ export function drawUniversalManuscriptPdfPage(
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(8.5);
     doc.setTextColor(30, 41, 59);
-    const sample = report.contentSample || 'Document submission content processed by Turnitin integrity engine.';
+    const sample = report.text || '';
+    if (!sample) return;
     const lines = doc.splitTextToSize(sample, contentWidth);
     doc.text(lines, margin, textY);
     return;
@@ -2418,10 +2416,7 @@ export async function downloadReportPdf(
     if (
       pageObj.type === 'manuscript' &&
       isOriginalPdf &&
-      report.fileData &&
-      !report.id.startsWith('rep-danish') &&
-      !report.id.startsWith('rep-cyb2103') &&
-      !report.id.startsWith('rep-kunal')
+      report.fileData
     ) {
       try {
         const coverPdfBytes = doc.output('arraybuffer');
@@ -2611,26 +2606,7 @@ export async function downloadReportPdf(
     } else if (pageObj.type === 'manuscript') {
       const mIdx = pageObj.manuscriptIndex || 0;
 
-      if (report.id === 'rep-danish-tauseef-shoaib') {
-        const sectionHeader = mode === 'ai' ? 'AI Writing Submission' : 'Integrity Submission';
-        drawHeaderAndFooter(pageObj.pageNumber, sectionHeader);
-        drawDanishManuscriptPdfPage(doc, mIdx, margin, contentWidth, pageWidth, pageHeight, report, mode);
-        continue;
-      }
-      if (report.id === 'rep-cyb2103-cyber-risk') {
-        const sectionHeader = mode === 'ai' ? 'AI Writing Submission' : 'Integrity Submission';
-        drawHeaderAndFooter(pageObj.pageNumber, sectionHeader);
-        drawCyb2103ManuscriptPdfPage(doc, mIdx, margin, contentWidth, pageWidth, pageHeight, report, mode);
-        continue;
-      }
-      if (report.id === 'rep-kunal-ai-dev') {
-        const sectionHeader = mode === 'ai' ? 'AI Writing Submission' : 'Integrity Submission';
-        drawHeaderAndFooter(pageObj.pageNumber, sectionHeader);
-        drawKunalManuscriptPdfPage(doc, mIdx, margin, contentWidth, pageWidth, pageHeight, report, mode);
-        continue;
-      }
-
-      // Universal Dynamic Turnitin Manuscript Page Renderer for all documents & uploaded files
+      // Universal Dynamic Turnitin Manuscript Page Renderer for all documents & uploaded files.
       drawUniversalManuscriptPdfPage(
         doc,
         mIdx,

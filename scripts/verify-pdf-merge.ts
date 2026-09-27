@@ -6,18 +6,6 @@
  */
 
 import { PDFDocument } from 'pdf-lib';
-import { DANISH_PDF_BASE64 } from '../src/data/danishPdfBase64';
-
-function base64ToUint8Array(base64: string): Uint8Array {
-  const cleanBase64 = base64.includes(',') ? base64.split(',')[1] : base64;
-  const binaryString = atob(cleanBase64);
-  const len = binaryString.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
-  }
-  return bytes;
-}
 
 async function createMockCoverPages(count: number, reportType: string): Promise<Uint8Array> {
   const coverDoc = await PDFDocument.create();
@@ -37,7 +25,9 @@ async function verifyPdfMergePipeline(mode: 'similarity' | 'ai') {
   console.log(`======================================================`);
 
   // 1. Load Original User PDF
-  const originalBytes = base64ToUint8Array(DANISH_PDF_BASE64);
+  const originalDocForTest = await PDFDocument.create();
+  originalDocForTest.addPage([595.28, 841.89]);
+  const originalBytes = await originalDocForTest.save();
   const originalDoc = await PDFDocument.load(originalBytes, { ignoreEncryption: true });
   const originalPageCount = originalDoc.getPageCount();
 

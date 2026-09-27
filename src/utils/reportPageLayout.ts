@@ -1,7 +1,4 @@
 import { ScanReport, MatchedSource } from '../types';
-import { isCyb2103Document } from '../data/cyb2103Report';
-import { isDanishDocument } from '../data/danishReport';
-import { isKunalReport } from '../data/kunalReport';
 
 export interface PageLayoutItem {
   pageNumber: number;
@@ -23,23 +20,13 @@ export function getReportPageLayout(
   report: ScanReport,
   mode: 'ai' | 'similarity'
 ): ReportLayoutPlan {
-  const isCyb = isCyb2103Document(report.fileName || report.title);
-  const isDan = isDanishDocument(report.fileName || report.title);
-  const isKunal = isKunalReport(report);
-
-  let mCount = report.pageCount || 1;
-  if (isDan) {
-    mCount = 12;
-  } else if (isCyb) {
-    mCount = 4;
-  } else if (isKunal) {
-    mCount = 3;
-  }
+  const mCount = Math.max(1, report.pageCount || 1);
 
   const sources = report.sources || [];
+  const coverPageCount = mode === 'ai' ? 2 : 3;
 
   if (mode === 'ai') {
-    // 2 Cover Pages (Cover, AI Overview) + Manuscript Pages
+    // AI report: exactly 2 pages before manuscript rendering (cover + AI overview)
     const pages: PageLayoutItem[] = [
       { pageNumber: 1, type: 'cover', sectionTitle: 'Cover Page' },
       { pageNumber: 2, type: 'ai_overview', sectionTitle: 'AI Writing Overview' },
@@ -50,9 +37,9 @@ export function getReportPageLayout(
         sectionTitle: 'AI Writing Submission',
       })),
     ];
-    return { totalPages: 2 + mCount, manuscriptCount: mCount, pages };
+    return { totalPages: coverPageCount + mCount, manuscriptCount: mCount, pages };
   } else {
-    // 2 Cover Pages (Cover, Integrity Overview) + Top Sources Pages + Manuscript Pages
+    // Similarity report: exactly 3 pages before manuscript rendering (cover + integrity + source overview)
     const sourcesPages: PageLayoutItem[] = [];
     if (sources.length <= 10) {
       sourcesPages.push({
@@ -91,7 +78,7 @@ export function getReportPageLayout(
       }
     }
 
-    const totalCoverAndSourcePages = 2 + sourcesPages.length;
+    const totalCoverAndSourcePages = coverPageCount + sourcesPages.length - 1;
     const manuscriptStartPageNumber = totalCoverAndSourcePages + 1;
 
     const pages: PageLayoutItem[] = [
@@ -115,15 +102,6 @@ export function getReportPageLayout(
 }
 
 export function getReportPdfFileName(report: ScanReport, mode: 'ai' | 'similarity'): string {
-  const isCyb = isCyb2103Document(report.fileName || report.title);
-  if (isCyb) {
-    if (mode === 'similarity') {
-      return 'similarity-CYB2103_Assessment_3_Cyber_Risk_Management_report.pdf';
-    } else {
-      return 'ai-CYB2103_Assessment_3_Cyber_Risk_Management_report.pdf';
-    }
-  }
-
   const rawBase = (report.fileName || report.title || 'Turnitin_Report')
     .replace(/\.[^/.]+$/, '')
     .replace(/[^a-zA-Z0-9_-]/g, '_');

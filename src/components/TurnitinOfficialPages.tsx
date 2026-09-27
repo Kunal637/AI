@@ -1,6 +1,5 @@
 import React from 'react';
 import { ScanReport, MatchedSource } from '../types';
-import { isDanishDocument } from '../data/danishReport';
 import {
   Building2,
   Globe,

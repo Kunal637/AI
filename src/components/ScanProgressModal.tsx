@@ -46,7 +46,7 @@ export const ScanProgressModal: React.FC = () => {
         </div>
 
         <div className="text-[11px] text-slate-400 bg-slate-50 p-2.5 rounded-xl border border-slate-100">
-          Comparing against 94B+ web pages, journals, and thesis archives
+          Processing the uploaded document and preparing the rendered report.
         </div>
       </div>
     </div>

@@ -24,8 +24,8 @@ export const AuthGate: React.FC = () => {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Admin form state
-  const [adminEmail, setAdminEmail] = useState('admin@turnitscope.com');
-  const [adminPassword, setAdminPassword] = useState('admin@turnitscopepass2026!');
+  const [adminEmail, setAdminEmail] = useState('');
+  const [adminPassword, setAdminPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
 
   const handleGoogleAuth = async () => {
@@ -63,12 +63,6 @@ export const AuthGate: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  };
-
-  const fillMasterAdminCredentials = () => {
-    setAdminEmail('admin@turnitscope.com');
-    setAdminPassword('admin@turnitscopepass2026!');
-    setErrorMessage(null);
   };
 
   return (
@@ -273,13 +267,6 @@ export const AuthGate: React.FC = () => {
                   <label className="text-xs font-semibold text-slate-300">
                     Administrator Password
                   </label>
-                  <button
-                    type="button"
-                    onClick={fillMasterAdminCredentials}
-                    className="text-[11px] text-amber-400 hover:text-amber-300 font-semibold cursor-pointer underline"
-                  >
-                    Auto-fill Default Credentials
-                  </button>
                 </div>
                 <div className="relative">
                   <input
