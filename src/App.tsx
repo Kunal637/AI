@@ -15,7 +15,7 @@ import { ToastNotificationBanner } from './components/ToastNotificationBanner';
 import { ScanReport } from './types';
 import { CheckCircle2, AlertCircle, Info, Loader2 } from 'lucide-react';
 
-const IDLE_TIMEOUT_MS = 10 * 60 * 1000;
+const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const IDLE_WARNING_MS = 60 * 1000;
 const ACTIVITY_STORAGE_PREFIX = 'turnitscope:last-activity:';
 
