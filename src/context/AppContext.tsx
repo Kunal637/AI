@@ -20,7 +20,7 @@ import {
   updateFirebaseUserProfile,
   FirebaseUser,
 } from '../lib/firebase';
-import { doc, collection, deleteDoc, onSnapshot, query, where } from 'firebase/firestore';
+import { doc, collection, deleteDoc, onSnapshot, query, runTransaction, where } from 'firebase/firestore';
 import { ref, deleteObject } from 'firebase/storage';
 import { storage } from '../lib/firebase';
 import { buildUserFromAuthProfile } from '../lib/userProfiles';
@@ -95,7 +95,7 @@ interface AppContextType {
     planName?: string;
     planExpiry?: string;
   }) => Promise<boolean>;
-  updateUserAsAdmin: (userId: string, updates: Partial<User>) => Promise<boolean>;
+  updateUserAsAdmin: (userId: string, updates: Partial<User>, expectedCredits?: number) => Promise<boolean>;
   refreshFromFirestore: () => Promise<void>;
   isFirestoreSyncing: boolean;
   resetAllData: () => void;
@@ -1347,7 +1347,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // Update user as Admin (Update user profile, plan, or credits directly in Firestore)
-  const updateUserAsAdmin = async (userId: string, updates: Partial<User>): Promise<boolean> => {
+  const updateUserAsAdmin = async (userId: string, updates: Partial<User>, expectedCredits?: number): Promise<boolean> => {
     if (!isAdminEmail(currentUser.email)) {
       setNotification({ message: 'Unauthorized: Only administrators can update user accounts.', type: 'error' });
       return false;
@@ -1355,17 +1355,37 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const targetUser = users.find(u => u.id === userId);
     const prevCredits = targetUser ? targetUser.credits : 0;
 
-    setUsers(prev =>
-      prev.map(u => (u.id === userId ? { ...u, ...updates } : u))
-    );
-
-    if (currentUser.id === userId) {
-      setCurrentUser(prev => ({ ...prev, ...updates }));
-    }
-
     // MAP TO FIRESTORE: Update document in Firestore
     try {
-      await safeSetDoc(doc(db, 'users', userId), updates, { merge: true });
+      if (updates.credits !== undefined && updates.credits !== prevCredits) {
+        const userRef = doc(db, 'users', userId);
+        const expectedBalance = expectedCredits ?? prevCredits;
+        await runTransaction(db, async transaction => {
+          const userSnapshot = await transaction.get(userRef);
+          if (!userSnapshot.exists()) {
+            throw new Error('This user no longer exists. Refresh the user list and try again.');
+          }
+
+          const currentBalance = typeof userSnapshot.data().credits === 'number'
+            ? userSnapshot.data().credits
+            : 0;
+          if (currentBalance !== expectedBalance) {
+            throw new Error('This user’s credit balance changed while the form was open. Reopen the user and try again.');
+          }
+
+          transaction.set(userRef, updates, { merge: true });
+        });
+      } else {
+        await safeSetDoc(doc(db, 'users', userId), updates, { merge: true });
+      }
+
+      setUsers(prev =>
+        prev.map(u => (u.id === userId ? { ...u, ...updates } : u))
+      );
+
+      if (currentUser.id === userId) {
+        setCurrentUser(prev => ({ ...prev, ...updates }));
+      }
 
       if (updates.credits !== undefined && updates.credits !== prevCredits) {
         const diff = updates.credits - prevCredits;
@@ -1392,10 +1412,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch (err) {
       console.warn('Notice while updating user in Firestore:', err);
       setNotification({
-        message: 'Updated user locally (synced to offline cache).',
-        type: 'info',
+        message: err instanceof Error ? err.message : 'Could not update the user in Firestore.',
+        type: 'error',
       });
-      return true;
+      return false;
     }
   };
 
